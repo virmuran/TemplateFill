@@ -13,8 +13,6 @@ TemplateFill — 模板驱动的 Office 文档生成工具
 import os
 import sys
 import json
-import csv
-import io
 from pathlib import Path
 from datetime import datetime
 
@@ -28,13 +26,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QFont, QIcon
 
-from doc_filler import parse_tags, fill_template, create_sample_template, load_tag_labels
+from doc_filler import parse_tags, fill_template, create_sample_template
 from xlsx_filler import (
     parse_tags as parse_xlsx_tags,
     fill_template as fill_xlsx_template,
     create_sample_template as create_xlsx_sample,
-    load_tag_labels as load_xlsx_labels,
 )
+from batch_manager import BatchManager
+from labels import tag_to_label, load_tag_labels, get_label, get_type, is_long_text_tag, parse_entry
 
 # ── 样式 ──
 MAIN_STYLE = """
@@ -113,11 +112,10 @@ class TemplateFillWindow(QMainWindow):
         self._loop_tables = {}            # loop_var → QTableWidget
         self._loop_fields = {}            # loop_var → [field_names]
         self._custom_labels = {}          # user-edited labels (in-app, highest priority)
-        self._json_labels = {}            # labels from .labels.json file
-        self._batch_mode = False          # 批量填充模式
-        self._batch_table = None          # 批量模式的 QTableWidget
-        self._batch_tags = []            # 批量模式的标签列表
-        self._batch_loops = {}           # 批量模式的循环（暂不支持批量填充）
+        self._custom_types = {}           # user-edited widget types (in-app)
+        self._json_labels = {}            # labels from .labels.json file (parsed entries)
+
+        self.batch = BatchManager(self)   # 批量填充管理器
 
         self._setup_ui()
         self._auto_load_sample()
@@ -159,7 +157,7 @@ class TemplateFillWindow(QMainWindow):
                          border: 1px solid #d4a020; }
             QPushButton:hover { background: #e0b030; }
         """)
-        self.btn_batch.clicked.connect(self._toggle_batch_mode)
+        self.btn_batch.clicked.connect(self.batch.toggle)
         top_bar.addWidget(self.btn_batch)
 
         self.lbl_template = QLabel("未加载模板")
@@ -276,7 +274,7 @@ class TemplateFillWindow(QMainWindow):
                 result = parse_xlsx_tags(path)
                 tags = result['simple']
                 loops = result['loops']
-                self._json_labels = load_xlsx_labels(path)
+                self._json_labels = load_tag_labels(path)
             else:
                 self._template_format = 'docx'
                 tags = parse_tags(path)
@@ -293,8 +291,9 @@ class TemplateFillWindow(QMainWindow):
             fmt_name = "Excel" if self._template_format == 'xlsx' else "Word"
             self._template_path = path
             self._custom_labels = {}
-            self._batch_tags = tags
-            self._batch_loops = loops
+            self._custom_types = {}
+            self.batch.tags = tags
+            self.batch.loops = loops
             self.lbl_template.setText(
                 f"模板：{os.path.basename(path)}  ({fmt_name} · {total_fields} 个字段)")
             self.lbl_template.setStyleSheet(
@@ -319,15 +318,15 @@ class TemplateFillWindow(QMainWindow):
         self._field_widgets.clear()
         self._loop_tables.clear()
         self._loop_fields.clear()
-        self._batch_table = None
+        self.batch.table = None
         while self.form_layout.count():
             item = self.form_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         # 批量模式：构建批量表格
-        if self._batch_mode and tags:
-            self._build_batch_form(tags, loops)
+        if self.batch.mode and tags:
+            self.batch.build_form(tags, loops)
             return
 
         # ── 简单变量 ──
@@ -346,15 +345,14 @@ class TemplateFillWindow(QMainWindow):
                 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
             """)
             group.setProperty("tag", tag)
-            group.setToolTip("双击标题可修改显示名")
+            group.setToolTip("双击标题可修改显示名和控件类型")
             group.installEventFilter(self)
             layout = QVBoxLayout(group)
             layout.setContentsMargins(10, 8, 10, 10)
 
-            long_tags = {'overview', 'technical_plan', 'implementation',
-                        'budget', 'conclusion', 'content', 'description',
-                        'summary', 'abstract', 'details', 'remarks'}
-            if tag in long_tags or tag.endswith('_text') or tag.endswith('_plan'):
+            # 控件类型：用户配置 > JSON 文件 > 变量名兜底
+            widget_type = self._resolve_type(tag)
+            if widget_type == 'multi':
                 widget = QTextEdit()
                 widget.setMinimumHeight(60)
                 widget.setMaximumHeight(120)
@@ -482,22 +480,17 @@ class TemplateFillWindow(QMainWindow):
         """解析显示名：自定义编辑 > JSON 文件 > 代码映射 > 自动生成"""
         if tag in self._custom_labels:
             return self._custom_labels[tag]
-        if tag in self._json_labels and self._json_labels[tag]:
-            return self._json_labels[tag]
-        return self._tag_to_label(tag)
+        # JSON 文件中查找（兼容新旧格式）
+        label = get_label(self._json_labels, tag)
+        if label:
+            return label
+        return tag_to_label(tag)
 
-    @staticmethod
-    def _tag_to_label(tag):
-        """将标签名转为友好的中文显示名"""
-        mapping = {
-            'title': '文档标题', 'author': '编制人', 'date': '日期',
-            'department': '部门', 'project_name': '项目名称',
-            'doc_number': '编号', 'reviewer': '审核人', 'company': '单位名称',
-            'phone': '联系电话', 'overview': '项目概况', 'budget': '预算与资源',
-            'technical_plan': '技术方案', 'implementation': '实施计划',
-            'conclusion': '结论与建议',
-        }
-        return mapping.get(tag, tag.replace('_', ' ').title())
+    def _resolve_type(self, tag):
+        """解析控件类型：自定义编辑 > JSON 文件 > 变量名兜底判断"""
+        if tag in self._custom_types:
+            return self._custom_types[tag]
+        return get_type(self._json_labels, tag)
 
     # ── 标签改名（双击） ─────────────────────────────────────
 
@@ -511,24 +504,62 @@ class TemplateFillWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _edit_label(self, tag, group_box):
-        """弹出 QInputDialog 让用户修改字段的显示名称，并自动写回 .labels.json"""
-        current = group_box.title()
-        new_label, ok = QInputDialog.getText(
-            self, "重命名字段",
-            f"变量名：{tag}\n新的显示名称：",
-            text=current
-        )
-        if ok and new_label.strip():
-            new_label = new_label.strip()
-            self._custom_labels[tag] = new_label
-            self._json_labels[tag] = new_label    # 同步到 JSON 缓存
-            group_box.setTitle(new_label)
+        """弹出对话框让用户修改显示名和控件类型（单行/多行），并自动写回 .labels.json"""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QComboBox, QFormLayout
 
-            # 自动写回 .labels.json
-            self._save_labels_json()
+        current_label = self._resolve_label(tag)
+        current_type = self._resolve_type(tag)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("编辑字段")
+        dlg.setMinimumWidth(340)
+        form = QFormLayout(dlg)
+
+        name_edit = QLineEdit(current_label)
+        name_edit.setPlaceholderText(f"变量名：{tag}")
+        form.addRow("显示名称：", name_edit)
+
+        type_combo = QComboBox()
+        type_combo.addItem("单行文本", "single")
+        type_combo.addItem("多行文本", "multi")
+        type_combo.setCurrentIndex(0 if current_type == 'single' else 1)
+        form.addRow("控件类型：", type_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_label = name_edit.text().strip()
+        new_type = type_combo.currentData()
+        if not new_label:
+            return
+
+        self._custom_labels[tag] = new_label
+        self._custom_types[tag] = new_type
+
+        # 写入 _json_labels（新格式）
+        old_entry = self._json_labels.get(tag)
+        old_label_entry = parse_entry(old_entry, tag)
+        self._json_labels[tag] = {
+            'label': new_label,
+            'type': new_type,
+        }
+
+        group_box.setTitle(new_label)
+
+        # 如果控件类型变了，重建表单以应用新的控件
+        if new_type != current_type:
+            self._build_form(self.batch.tags, self.batch.loops)
+
+        # 自动写回 .labels.json
+        self._save_labels_json()
 
     def _save_labels_json(self):
-        """将当前标签映射写回模板同目录的 .labels.json 文件"""
+        """将当前标签映射写回 .labels.json（新格式：每条为 {label, type} dict）"""
         if not self._template_path:
             return
         json_path = os.path.splitext(self._template_path)[0] + '.labels.json'
@@ -536,7 +567,7 @@ class TemplateFillWindow(QMainWindow):
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(self._json_labels, f, ensure_ascii=False, indent=2)
         except (IOError, PermissionError):
-            pass  # 静默失败：文件只读 / 目录无写入权限等情况
+            pass
 
     # ── 文档生成 ────────────────────────────────────────────
 
@@ -545,8 +576,8 @@ class TemplateFillWindow(QMainWindow):
         if not self._template_path:
             return
 
-        if self._batch_mode:
-            self._on_batch_generate()
+        if self.batch.mode:
+            self.batch._on_batch_generate()
             return
 
         # 收集简单变量
@@ -595,391 +626,6 @@ class TemplateFillWindow(QMainWindow):
             )
         except Exception as e:
             QMessageBox.critical(self, "生成失败", str(e))
-
-    # ── 批量填充 ────────────────────────────────────────────
-
-    def _toggle_batch_mode(self):
-        """切换单人 / 批量模式"""
-        if not self._template_path:
-            QMessageBox.information(self, "提示", "请先加载一个模板文件。")
-            return
-        self._batch_mode = not self._batch_mode
-        if self._batch_mode:
-            # 从单人模式收集当前填值作为默认值
-            self._batch_defaults = {}
-            for tag, widget in self._field_widgets.items():
-                val = widget.toPlainText() if isinstance(widget, QTextEdit) else widget.text()
-                if val.strip():
-                    self._batch_defaults[tag] = val.strip()
-
-            self.btn_batch.setText("◆ 批量模式")
-            self.btn_batch.setStyleSheet("""
-                QPushButton { background: #e67e22; color: white; font-weight: bold;
-                             border-radius: 6px; padding: 8px 14px; font-size: 12px;
-                             border: 1px solid #d35400; }
-                QPushButton:hover { background: #d35400; }
-            """)
-            self.btn_generate.setText("批量生成")
-            self.btn_generate.setToolTip("每行数据生成一个独立文件")
-        else:
-            self.btn_batch.setText("◇ 单人模式")
-            self.btn_batch.setStyleSheet("""
-                QPushButton { background: #f0c040; color: #333; font-weight: bold;
-                             border-radius: 6px; padding: 8px 14px; font-size: 12px;
-                             border: 1px solid #d4a020; }
-                QPushButton:hover { background: #e0b030; }
-            """)
-            self.btn_generate.setText("生成文档")
-            self.btn_generate.setToolTip("")
-        self._build_form(self._batch_tags, self._batch_loops)
-
-    def _build_batch_form(self, tags, loops):
-        """批量模式：构建大数据表格，每行 = 一个输出文件"""
-        defaults = getattr(self, '_batch_defaults', {})
-
-        # 提示标签
-        hint_lines = ["▎批量填充模式 — 每行数据生成一个独立文件"]
-        if defaults:
-            hint_lines.append(f"（已从单人模式带入 {len(defaults)} 个默认值）")
-        hint = QLabel("\n".join(hint_lines))
-        hint.setStyleSheet("font-size: 13px; color: #e67e22; font-weight: bold; padding: 4px 0;")
-        self.form_layout.addWidget(hint)
-
-        # 操作栏
-        btn_row = QHBoxLayout()
-
-        btn_csv = QPushButton("导入 CSV / Excel")
-        btn_csv.setStyleSheet("""
-            QPushButton { background: #3498db; color: white; font-weight: bold;
-                         border-radius: 4px; padding: 6px 14px; font-size: 12px; }
-            QPushButton:hover { background: #2980b9; }
-        """)
-        btn_csv.clicked.connect(self._import_csv)
-        btn_row.addWidget(btn_csv)
-
-        btn_paste = QPushButton("粘贴数据")
-        btn_paste.setStyleSheet("""
-            QPushButton { background: #9b59b6; color: white; font-weight: bold;
-                         border-radius: 4px; padding: 6px 14px; font-size: 12px; }
-            QPushButton:hover { background: #8e44ad; }
-        """)
-        btn_paste.clicked.connect(self._paste_clipboard)
-        btn_row.addWidget(btn_paste)
-
-        btn_row.addSpacing(15)
-
-        btn_add = QPushButton("+ 添加行")
-        btn_add.setStyleSheet("""
-            QPushButton { background: #27ae60; color: white; font-weight: bold;
-                         border-radius: 4px; padding: 6px 14px; font-size: 12px; }
-            QPushButton:hover { background: #219955; }
-        """)
-        btn_add.clicked.connect(self._add_batch_row)
-        btn_row.addWidget(btn_add)
-
-        btn_del = QPushButton("- 删除选中行")
-        btn_del.setStyleSheet("""
-            QPushButton { background: #e74c3c; color: white; font-weight: bold;
-                         border-radius: 4px; padding: 6px 14px; font-size: 12px; }
-            QPushButton:hover { background: #c0392b; }
-        """)
-        btn_del.clicked.connect(self._remove_batch_row)
-        btn_row.addWidget(btn_del)
-
-        if defaults:
-            btn_apply = QPushButton("应用默认值")
-            btn_apply.setStyleSheet("""
-                QPushButton { background: #f39c12; color: white; font-weight: bold;
-                             border-radius: 4px; padding: 6px 14px; font-size: 12px; }
-                QPushButton:hover { background: #e67e22; }
-            """)
-            btn_apply.clicked.connect(self._apply_defaults)
-            btn_row.addWidget(btn_apply)
-
-        btn_row.addStretch()
-        self.form_layout.addLayout(btn_row)
-
-        # 批量表格
-        table = QTableWidget()
-        table.setColumnCount(len(tags))
-        headers = [self._resolve_label(t) for t in tags]
-        table.setHorizontalHeaderLabels(headers)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setMinimumSectionSize(60)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(True)
-        table.setStyleSheet("""
-            QTableWidget { border: 1px solid #d0d5dd; border-radius: 4px;
-                          gridline-color: #e8edf2; font-size: 12px; }
-            QTableWidget::item { padding: 4px 6px; }
-            QHeaderView::section { background: #f0f2f5; font-weight: bold;
-                                  padding: 4px; border: 1px solid #d0d5dd; }
-        """)
-        table.verticalHeader().setDefaultSectionSize(32)
-        table.setMinimumHeight(200)
-        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        # 初始 3 个空行（含默认值）
-        for _ in range(3):
-            self._add_batch_row_to(table, defaults)
-
-        self._batch_table = table
-        self.form_layout.addWidget(table)
-
-        # 循环区域提示（批量模式暂不支持）
-        if loops:
-            loop_warn = QLabel(
-                "⚠ 模板含循环区域（{% for %}），批量模式暂不支持循环数据填充。\n"
-                "循环区域在批量生成时将被跳过。如需循环，请使用单人模式。")
-            loop_warn.setStyleSheet("color: #e67e22; font-size: 11px; padding: 4px 0;")
-            self.form_layout.addWidget(loop_warn)
-
-        self.form_layout.addStretch()
-
-    def _add_batch_row_to(self, table, defaults=None):
-        """向指定表格添加一行，可选填入默认值"""
-        row = table.rowCount()
-        table.insertRow(row)
-        table.setRowHeight(row, 32)
-        if defaults:
-            for tag, val in defaults.items():
-                if tag in self._batch_tags:
-                    col = self._batch_tags.index(tag)
-                    item = QTableWidgetItem(val)
-                    table.setItem(row, col, item)
-
-    def _add_batch_row(self):
-        if self._batch_table:
-            self._add_batch_row_to(self._batch_table, getattr(self, '_batch_defaults', {}))
-
-    def _apply_defaults(self):
-        """将默认值应用到所有行"""
-        defaults = getattr(self, '_batch_defaults', {})
-        if not defaults or not self._batch_table:
-            return
-        table = self._batch_table
-        for row in range(table.rowCount()):
-            for tag, val in defaults.items():
-                if tag in self._batch_tags:
-                    col = self._batch_tags.index(tag)
-                    existing = table.item(row, col)
-                    if not existing or not existing.text().strip():
-                        item = QTableWidgetItem(val)
-                        table.setItem(row, col, item)
-        self.status_bar.showMessage(f"已将 {len(defaults)} 个默认值应用到所有空单元格")
-
-    def _remove_batch_row(self):
-        if not self._batch_table:
-            return
-        rows = set()
-        for item in self._batch_table.selectedItems():
-            rows.add(item.row())
-        for row in sorted(rows, reverse=True):
-            self._batch_table.removeRow(row)
-
-    def _import_csv(self):
-        """从 CSV 或 Excel 文件导入批量数据"""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "导入数据文件", os.path.expanduser("~\\Desktop"),
-            "表格文件 (*.csv *.xlsx *.xls);;CSV 文件 (*.csv);;Excel 工作簿 (*.xlsx *.xls);;所有文件 (*.*)"
-        )
-        if not path:
-            return
-
-        try:
-            ext = os.path.splitext(path)[1].lower()
-            if ext in ('.xlsx', '.xls'):
-                import openpyxl
-                wb = openpyxl.load_workbook(path, data_only=True)
-                ws = wb.active
-                rows_data = []
-                for row in ws.iter_rows(values_only=True):
-                    rows_data.append([str(v) if v is not None else '' for v in row])
-                wb.close()
-            else:
-                # CSV: 尝试常见编码
-                rows_data = []
-                for encoding in ['utf-8-sig', 'utf-8', 'gbk', 'gb2312']:
-                    try:
-                        with open(path, 'r', encoding=encoding) as f:
-                            reader = csv.reader(f)
-                            rows_data = [list(row) for row in reader]
-                        break
-                    except (UnicodeDecodeError, Exception):
-                        continue
-        except Exception as e:
-            QMessageBox.critical(self, "导入失败", f"无法读取文件：{e}")
-            return
-
-        if not rows_data:
-            QMessageBox.warning(self, "提示", "文件中没有数据。")
-            return
-
-        # 第一行可能是表头 — 尝试匹配模板变量名
-        header_row = rows_data[0]
-        # 将模板标签映射到列索引
-        tag_to_col = {}
-        for tag in self._batch_tags:
-            label_lower = self._resolve_label(tag).lower()
-            for col_idx, h in enumerate(header_row):
-                h_lower = h.strip().lower().replace(' ', '_').replace('（', '').replace('）', '')
-                if h_lower == tag.lower() or h_lower == label_lower:
-                    tag_to_col[tag] = col_idx
-                    break
-
-        # 如果至少有一个匹配，跳过表头行
-        data_start = 1 if tag_to_col else 0
-        if not tag_to_col:
-            # 表头不匹配，尝试按列顺序对应
-            for idx, tag in enumerate(self._batch_tags):
-                if idx < len(header_row):
-                    tag_to_col[tag] = idx
-
-        # 清空表格，重新填充
-        table = self._batch_table
-        table.setRowCount(0)
-
-        for row_data in rows_data[data_start:]:
-            if not any(v.strip() for v in row_data):
-                continue  # 跳过空行
-            row = table.rowCount()
-            table.insertRow(row)
-            table.setRowHeight(row, 32)
-            for tag, col_idx in tag_to_col.items():
-                if col_idx < len(row_data):
-                    value = row_data[col_idx].strip()
-                    if value:
-                        tag_col = self._batch_tags.index(tag)
-                        item = QTableWidgetItem(value)
-                        table.setItem(row, tag_col, item)
-
-        self.status_bar.showMessage(f"已导入 {table.rowCount()} 行数据")
-
-    def _paste_clipboard(self):
-        """从剪贴板粘贴表格数据"""
-        clip = QApplication.clipboard()
-        text = clip.text()
-        if not text:
-            return
-
-        lines = text.strip().split('\n')
-        rows_data = []
-        for line in lines:
-            # 支持 Tab 或逗号分隔
-            if '\t' in line:
-                row = line.split('\t')
-            elif ',' in line:
-                row = line.split(',')
-            else:
-                row = [line]
-            rows_data.append([v.strip() for v in row])
-
-        # 尝试匹配表头
-        tag_to_col = {}
-        if rows_data:
-            header_row = rows_data[0]
-            for tag in self._batch_tags:
-                label_lower = self._resolve_label(tag).lower()
-                for col_idx, h in enumerate(header_row):
-                    h_lower = h.lower()
-                    if h_lower == tag.lower() or h_lower == label_lower:
-                        tag_to_col[tag] = col_idx
-                        break
-
-        data_start = 1 if tag_to_col else 0
-        if not tag_to_col:
-            for idx, tag in enumerate(self._batch_tags):
-                if idx < len(header_row):
-                    tag_to_col[tag] = idx
-
-        table = self._batch_table
-        table.setRowCount(0)
-
-        for row_data in rows_data[data_start:]:
-            if not any(v for v in row_data):
-                continue
-            row = table.rowCount()
-            table.insertRow(row)
-            table.setRowHeight(row, 32)
-            for tag, col_idx in tag_to_col.items():
-                if col_idx < len(row_data):
-                    value = row_data[col_idx]
-                    if value:
-                        tag_col = self._batch_tags.index(tag)
-                        item = QTableWidgetItem(value)
-                        table.setItem(row, tag_col, item)
-
-        self.status_bar.showMessage(f"已粘贴 {table.rowCount()} 行数据")
-
-    def _on_batch_generate(self):
-        """批量生成：每行数据生成一个独立文件"""
-        table = self._batch_table
-        if not table or table.rowCount() == 0:
-            QMessageBox.warning(self, "提示", "批量表格中没有数据行。")
-            return
-
-        # 收集所有行数据
-        row_contexts = []
-        for row in range(table.rowCount()):
-            ctx = {}
-            has_data = False
-            for col in range(table.columnCount()):
-                tag = self._batch_tags[col]
-                cell_item = table.item(row, col)
-                value = cell_item.text().strip() if cell_item else ''
-                if value:
-                    has_data = True
-                ctx[tag] = value
-            if has_data:
-                row_contexts.append(ctx)
-
-        if not row_contexts:
-            QMessageBox.warning(self, "提示", "所有数据行均为空。")
-            return
-
-        # 确认
-        reply = QMessageBox.question(
-            self, "确认批量生成",
-            f"将为 {len(row_contexts)} 行数据各生成一个文件，保存到桌面。\n\n确定继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        # 逐行生成
-        success = 0
-        errors = []
-        fill_func = fill_xlsx_template if self._template_format == 'xlsx' else fill_template
-
-        for idx, ctx in enumerate(row_contexts):
-            try:
-                base = os.path.splitext(os.path.basename(self._template_path))[0]
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                # 文件名：模板名_序号_时间戳
-                ts_short = datetime.now().strftime('%H%M%S')
-                output_path = os.path.join(
-                    os.path.expanduser("~"), "Desktop",
-                    f"{base}_{idx + 1:03d}_{ts_short}.{self._template_format}"
-                )
-                fill_func(self._template_path, ctx, output_path)
-                success += 1
-            except Exception as e:
-                errors.append(f"第 {idx + 1} 行: {e}")
-
-        if errors:
-            QMessageBox.warning(
-                self, "批量生成完成",
-                f"成功：{success} 个文件\n失败：{len(errors)} 个\n\n"
-                + "\n".join(errors[:5])
-            )
-        else:
-            QMessageBox.information(
-                self, "批量生成完成",
-                f"已生成 {success} 个文件，保存在桌面上。"
-            )
-            self.status_bar.showMessage(f"批量生成完成：{success} 个文件 → 桌面")
-
 
 def main():
     app = QApplication(sys.argv)

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# WorkBuddy project data
+.workbuddy/
+
+# Output files (generated from templates)
+# Uncomment if you don't want to track generated outputs:
+# output/
+# desktop/*.docx
+# desktop/*.xlsx
+
+# Secrets / local config
+*.local
+*.secret
+.env

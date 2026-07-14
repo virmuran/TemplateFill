@@ -163,56 +163,16 @@ def create_sample_template(output_path):
 
 
 def load_tag_labels(template_path):
-    """
-    从模板同目录的 .labels.json 文件加载标签显示名映射。
-
-    文件命名规则：report.docx → report.labels.json
-
-    JSON 格式示例：
-    {
-        "customer_level": "客户等级",
-        "department_header": "页眉_部门"
-    }
-
-    返回：dict，若文件不存在或解析失败则返回空 dict。
-    """
-    import json
-
-    json_path = os.path.splitext(template_path)[0] + '.labels.json'
-
-    if not os.path.exists(json_path):
-        return {}
-
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (json.JSONDecodeError, IOError, UnicodeDecodeError):
-        pass
-
-    return {}
+    """Deprecated: 请使用 labels.load_tag_labels 代替"""
+    from labels import load_tag_labels as _load
+    return _load(template_path)
 
 
 def create_sample_labels(template_path):
-    """
-    为指定模板自动生成 .labels.json 骨架文件。
-    将模板中所有标签列出，显示名留空等待用户填写。
-    如果 .labels.json 已存在则跳过。
-    """
-    import json
-
-    json_path = os.path.splitext(template_path)[0] + '.labels.json'
-    if os.path.exists(json_path):
-        return json_path  # 已存在，不覆盖
-
+    """Deprecated: 请使用 labels.create_label_skeleton 代替"""
+    from labels import create_label_skeleton
     tags = parse_tags(template_path)
-    skeleton = {t: "" for t in tags}
-
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(skeleton, f, ensure_ascii=False, indent=2)
-
-    return json_path
+    return create_label_skeleton(template_path, tags)
 
 
 if __name__ == '__main__':

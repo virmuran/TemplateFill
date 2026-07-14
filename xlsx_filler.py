@@ -9,7 +9,6 @@ TemplateFill — Excel (.xlsx) 模板填充引擎
 
 import re
 import os
-import json
 from collections import OrderedDict, defaultdict
 from copy import copy
 
@@ -342,8 +341,9 @@ def _expand_loop(ws, loop_info, items):
 
                 text = str(raw_value)
 
-                # 替换 {{item.field}} — 用已知字段名直接替换
-                for field_name in loop_info.get('fields', []):
+                # 替换 {{item.field}} — 按字段名长度降序，避免短名污染长名
+                fields_sorted = sorted(loop_info.get('fields', []), key=len, reverse=True)
+                for field_name in fields_sorted:
                     placeholder = f"{{{{{item_var}.{field_name}}}}}"
                     if placeholder in text:
                         val = item_data.get(field_name, '')
@@ -375,13 +375,10 @@ def _expand_loop(ws, loop_info, items):
 def _save_and_clear_merges(ws, start_row):
     """保存并清除 start_row 及以下所有合并单元格范围。返回 [(min_col, min_row, max_col, max_row), ...]"""
     merges = []
-    to_remove = []
     for mc in list(ws.merged_cells.ranges):
         if mc.min_row >= start_row or mc.max_row >= start_row:
             merges.append((mc.min_col, mc.min_row, mc.max_col, mc.max_row))
-            to_remove.append(str(mc))
-    for mc_str in to_remove:
-        ws.unmerge_cells(mc_str)
+            ws.unmerge_cells(str(mc))
     return merges
 
 
@@ -482,17 +479,6 @@ def _fix_range(match, first_tpl, last_tpl, final_start, final_end, row_shift):
     return match.group(0)
 
 
-def _copy_cell_style(src, dst):
-    """复制单元格样式"""
-    if src.has_style:
-        dst.font = copy(src.font)
-        dst.fill = copy(src.fill)
-        dst.border = copy(src.border)
-        dst.alignment = copy(src.alignment)
-        dst.number_format = src.number_format
-        dst.protection = copy(src.protection)
-
-
 def _fill_simple_vars(ws, context):
     """替换 sheet 中所有的简单变量 {{var}}"""
     for row in ws.iter_rows():
@@ -535,34 +521,16 @@ def _fill_simple_vars(ws, context):
 # ── 标签映射工具（与 docx 版本共享接口） ────────────────
 
 def load_tag_labels(template_path):
-    """从模板同目录的 .labels.json 加载标签显示名映射"""
-    json_path = os.path.splitext(template_path)[0] + '.labels.json'
-    if not os.path.exists(json_path):
-        return {}
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (json.JSONDecodeError, IOError, UnicodeDecodeError):
-        pass
-    return {}
+    """Deprecated: 请使用 labels.load_tag_labels 代替"""
+    from labels import load_tag_labels as _load
+    return _load(template_path)
 
 
 def create_sample_labels(template_path):
-    """为模板自动生成 .labels.json 骨架（仅包含简单变量）"""
-    json_path = os.path.splitext(template_path)[0] + '.labels.json'
-    if os.path.exists(json_path):
-        return json_path
-
+    """Deprecated: 请使用 labels.create_label_skeleton 代替"""
+    from labels import create_label_skeleton
     result = parse_tags(template_path)
-    simple_tags = result['simple']
-    skeleton = {t: "" for t in simple_tags}
-
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(skeleton, f, ensure_ascii=False, indent=2)
-
-    return json_path
+    return create_label_skeleton(template_path, result['simple'])
 
 
 # ── 示例模板生成 ────────────────────────────────────────
