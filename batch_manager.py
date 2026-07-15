@@ -255,11 +255,12 @@ class BatchManager:
     def _import_csv(self):
         """从 CSV 或 Excel 文件导入批量数据"""
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "导入数据文件", os.path.expanduser("~\\Desktop"),
+            self.window, "导入数据文件", self.window._last_dir,
             "表格文件 (*.csv *.xlsx *.xls);;CSV 文件 (*.csv);;Excel 工作簿 (*.xlsx *.xls);;所有文件 (*.*)"
         )
         if not path:
             return
+        self.window._last_dir = os.path.dirname(path)
 
         try:
             ext = os.path.splitext(path)[1].lower()

@@ -118,6 +118,7 @@ class TemplateFillWindow(QMainWindow):
         self._template_path = None
         self._template_format = None      # 'docx' or 'xlsx'
         self._project_path = None         # 当前项目文件路径（.tplfill）
+        self._last_dir = os.path.expanduser("~\\Desktop")  # 上次打开/保存的目录
         self._field_widgets = {}          # tag_name → (QLineEdit | QTextEdit)
         self._loop_tables = {}            # loop_var → QTableWidget
         self._loop_fields = {}            # loop_var → [field_names]
@@ -252,10 +253,11 @@ class TemplateFillWindow(QMainWindow):
 
     def _on_open_template(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择模板文件", os.path.expanduser("~\\Desktop"),
+            self, "选择模板文件", self._last_dir,
             "Office 模板 (*.docx *.xlsx);;Word 文档 (*.docx);;Excel 工作簿 (*.xlsx);;所有文件 (*.*)"
         )
         if path:
+            self._last_dir = os.path.dirname(path)
             self._load_template(path)
 
     def _on_create_sample(self):
@@ -666,11 +668,9 @@ class TemplateFillWindow(QMainWindow):
         if self._project_path:
             default_dir = os.path.dirname(self._project_path)
             default_name = os.path.basename(self._project_path)
-        else:
-            default_dir = os.path.expanduser("~\\Desktop")
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存项目", os.path.join(default_dir, default_name),
+            self, "保存项目", os.path.join(self._last_dir, default_name),
             "TemplateFill 项目 (*.tplfill);;所有文件 (*.*)"
         )
         if not path:
@@ -680,6 +680,7 @@ class TemplateFillWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self._project_path = path
+            self._last_dir = os.path.dirname(path)
             self._update_title()
             self.status_bar.showMessage(f"项目已保存：{path}")
         except (IOError, PermissionError) as e:
@@ -688,11 +689,12 @@ class TemplateFillWindow(QMainWindow):
     def _open_project(self):
         """打开 .tplfill 项目文件，恢复编辑状态"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开项目", os.path.expanduser("~\\Desktop"),
+            self, "打开项目", self._last_dir,
             "TemplateFill 项目 (*.tplfill);;所有文件 (*.*)"
         )
         if not path:
             return
+        self._last_dir = os.path.dirname(path)
 
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -720,7 +722,7 @@ class TemplateFillWindow(QMainWindow):
                 )
                 if reply == QMessageBox.StandardButton.Yes:
                     new_path, _ = QFileDialog.getOpenFileName(
-                        self, "选择模板文件", os.path.expanduser("~\\Desktop"),
+                        self, "选择模板文件", self._last_dir,
                         "Office 模板 (*.docx *.xlsx);;所有文件 (*.*)"
                     )
                     if not new_path:
