@@ -30,11 +30,14 @@ Desktop.ini
 # Output files (generated from templates)
 # Uncomment if you don't want to track generated outputs:
 # output/
-# desktop/*.docx
-# desktop/*.xlsx
+*.docx
+*.xlsx
+*.json
 
 # Secrets / local config
 *.local
 *.secret
 .env
 *.tplfill
+
+templates/
