@@ -37,3 +37,4 @@ Desktop.ini
 *.local
 *.secret
 .env
+*.tplfill

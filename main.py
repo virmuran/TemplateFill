@@ -86,6 +86,15 @@ QPushButton:hover { background: #219955; }
 QPushButton:disabled { background: #a0d8b0; }
 """
 
+BUTTON_PROJECT = """
+QPushButton {
+    background: #f5f6f8; color: #4a6fa5; font-weight: bold;
+    border-radius: 6px; padding: 8px 14px; font-size: 12px;
+    border: 1px solid #4a6fa5;
+}
+QPushButton:hover { background: #e8edf5; }
+"""
+
 TEMPLATE_LABEL_STYLE = """
 QLabel {
     color: #666; font-size: 12px;
@@ -108,6 +117,7 @@ class TemplateFillWindow(QMainWindow):
 
         self._template_path = None
         self._template_format = None      # 'docx' or 'xlsx'
+        self._project_path = None         # 当前项目文件路径（.tplfill）
         self._field_widgets = {}          # tag_name → (QLineEdit | QTextEdit)
         self._loop_tables = {}            # loop_var → QTableWidget
         self._loop_fields = {}            # loop_var → [field_names]
@@ -159,6 +169,19 @@ class TemplateFillWindow(QMainWindow):
         """)
         self.btn_batch.clicked.connect(self.batch.toggle)
         top_bar.addWidget(self.btn_batch)
+
+        # 项目保存 / 加载
+        self.btn_save_project = QPushButton("保存项目")
+        self.btn_save_project.setStyleSheet(BUTTON_PROJECT)
+        self.btn_save_project.setToolTip("将当前填写的数据保存为 .tplfill 项目文件，方便下次继续编辑")
+        self.btn_save_project.clicked.connect(self._save_project)
+        top_bar.addWidget(self.btn_save_project)
+
+        self.btn_open_project = QPushButton("打开项目")
+        self.btn_open_project.setStyleSheet(BUTTON_PROJECT)
+        self.btn_open_project.setToolTip("打开之前保存的 .tplfill 项目文件，恢复编辑状态")
+        self.btn_open_project.clicked.connect(self._open_project)
+        top_bar.addWidget(self.btn_open_project)
 
         self.lbl_template = QLabel("未加载模板")
         self.lbl_template.setStyleSheet(TEMPLATE_LABEL_STYLE)
@@ -290,6 +313,7 @@ class TemplateFillWindow(QMainWindow):
             total_fields = len(tags) + len(loops)
             fmt_name = "Excel" if self._template_format == 'xlsx' else "Word"
             self._template_path = path
+            self._project_path = None
             self._custom_labels = {}
             self._custom_types = {}
             self.batch.tags = tags
@@ -569,6 +593,241 @@ class TemplateFillWindow(QMainWindow):
         except (IOError, PermissionError):
             pass
 
+    # ── 项目保存 / 加载 ─────────────────────────────────────
+
+    def _collect_context(self):
+        """收集当前表单所有数据，返回序列化友好的 dict"""
+        context = {}
+        for tag, widget in self._field_widgets.items():
+            if isinstance(widget, QTextEdit):
+                context[tag] = widget.toPlainText()
+            else:
+                context[tag] = widget.text()
+
+        loops = {}
+        for loop_var, table in self._loop_tables.items():
+            fields = self._loop_fields.get(loop_var, [])
+            items = []
+            for row in range(table.rowCount()):
+                item_data = {}
+                for col in range(table.columnCount()):
+                    field_name = fields[col] if col < len(fields) else f"col{col}"
+                    cell_item = table.item(row, col)
+                    item_data[field_name] = cell_item.text().strip() if cell_item else ''
+                if any(v != '' for v in item_data.values()):
+                    items.append(item_data)
+            loops[loop_var] = items
+
+        return context, loops
+
+    def _save_project(self):
+        """将当前填写数据 + 标签配置保存为 .tplfill 项目文件"""
+        if not self._template_path:
+            QMessageBox.information(self, "提示", "请先加载一个模板文件。")
+            return
+
+        context, loops = self._collect_context()
+
+        # 收集批量表格数据（如果处于批量模式）
+        batch_data = None
+        if self.batch.mode and self.batch.table:
+            batch_data = []
+            for row in range(self.batch.table.rowCount()):
+                row_data = {}
+                for col in range(self.batch.table.columnCount()):
+                    if col < len(self.batch.tags):
+                        tag = self.batch.tags[col]
+                        item = self.batch.table.item(row, col)
+                        row_data[tag] = item.text().strip() if item else ''
+                if any(v != '' for v in row_data.values()):
+                    batch_data.append(row_data)
+
+        # 模板路径存为相对路径（如果可能）
+        try:
+            project_dir = os.path.dirname(os.path.abspath(self._project_path or __file__))
+            template_path = os.path.relpath(self._template_path, project_dir)
+        except ValueError:
+            template_path = self._template_path
+
+        data = {
+            'version': 1,
+            'template_path': template_path.replace('\\', '/'),
+            'template_format': self._template_format,
+            'context': context,
+            'loops': loops,
+            'custom_labels': self._custom_labels,
+            'custom_types': self._custom_types,
+            'batch_mode': self.batch.mode,
+            'batch_defaults': self.batch.defaults,
+            'batch_data': batch_data,
+        }
+
+        default_name = os.path.splitext(os.path.basename(self._template_path))[0] + '.tplfill'
+        if self._project_path:
+            default_dir = os.path.dirname(self._project_path)
+            default_name = os.path.basename(self._project_path)
+        else:
+            default_dir = os.path.expanduser("~\\Desktop")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存项目", os.path.join(default_dir, default_name),
+            "TemplateFill 项目 (*.tplfill);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self._project_path = path
+            self._update_title()
+            self.status_bar.showMessage(f"项目已保存：{path}")
+        except (IOError, PermissionError) as e:
+            QMessageBox.critical(self, "保存失败", f"无法写入文件：{e}")
+
+    def _open_project(self):
+        """打开 .tplfill 项目文件，恢复编辑状态"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开项目", os.path.expanduser("~\\Desktop"),
+            "TemplateFill 项目 (*.tplfill);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            QMessageBox.critical(self, "打开失败", f"无法读取项目文件：{e}")
+            return
+
+        # 验证基本结构
+        if not isinstance(data, dict) or 'template_path' not in data:
+            QMessageBox.critical(self, "格式错误", "项目文件格式不正确。")
+            return
+
+        # 解析模板路径（支持相对路径）
+        project_dir = os.path.dirname(os.path.abspath(path))
+        template_path = os.path.normpath(os.path.join(project_dir, data['template_path']))
+        if not os.path.exists(template_path):
+            # 尝试用原始路径
+            template_path = data['template_path']
+            if not os.path.exists(template_path):
+                reply = QMessageBox.question(
+                    self, "模板未找到",
+                    f"项目引用的模板文件不存在：\n{template_path}\n\n是否手动定位模板文件？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    new_path, _ = QFileDialog.getOpenFileName(
+                        self, "选择模板文件", os.path.expanduser("~\\Desktop"),
+                        "Office 模板 (*.docx *.xlsx);;所有文件 (*.*)"
+                    )
+                    if not new_path:
+                        return
+                    template_path = new_path
+                else:
+                    return
+
+        # 加载模板
+        self._load_template(template_path)
+
+        # 恢复自定义标签配置
+        if data.get('custom_labels'):
+            self._custom_labels = data['custom_labels']
+        if data.get('custom_types'):
+            self._custom_types = data['custom_types']
+
+        # 恢复简单变量数据
+        context = data.get('context', {})
+        for tag, widget in self._field_widgets.items():
+            if tag in context:
+                val = str(context[tag]) if context[tag] is not None else ''
+                if isinstance(widget, QTextEdit):
+                    widget.setPlainText(val)
+                else:
+                    widget.setText(val)
+
+        # 恢复循环表格数据
+        loops_data = data.get('loops', {})
+        for loop_var, items in loops_data.items():
+            table = self._loop_tables.get(loop_var)
+            fields = self._loop_fields.get(loop_var, [])
+            if not table or not fields:
+                continue
+            # 清空现有行（保留表头）
+            table.setRowCount(0)
+            for item_data in items:
+                row = table.rowCount()
+                table.insertRow(row)
+                table.setRowHeight(row, 40)
+                for col, field_name in enumerate(fields):
+                    if col >= table.columnCount():
+                        break
+                    value = item_data.get(field_name, '')
+                    item = QTableWidgetItem(str(value) if value else '')
+                    table.setItem(row, col, item)
+
+        # 恢复批量模式
+        if data.get('batch_mode'):
+            # 切换到批量模式（如果尚未处于）
+            if not self.batch.mode:
+                self.batch.mode = True
+                self.batch.defaults = data.get('batch_defaults', {})
+                self.batch.build_form(self.batch.tags, self.batch.loops)
+                # 填充批量表格数据
+                batch_data = data.get('batch_data')
+                if batch_data and self.batch.table:
+                    self.batch.table.setRowCount(0)
+                    for row_data in batch_data:
+                        row = self.batch.table.rowCount()
+                        self.batch.table.insertRow(row)
+                        self.batch.table.setRowHeight(row, 32)
+                        for tag, val in row_data.items():
+                            if tag in self.batch.tags:
+                                col = self.batch.tags.index(tag)
+                                item = QTableWidgetItem(str(val) if val else '')
+                                self.batch.table.setItem(row, col, item)
+                # 更新批量按钮样式
+                self.batch.mode = True  # 重建 build_form 后状态
+                # 这里 batch.mode 已经被 build_form 设置过，toggle 逻辑需要...
+                # 直接设置已保存的状态
+                self.btn_batch.setText("◆ 批量模式")
+                self.btn_batch.setStyleSheet("""
+                    QPushButton { background: #e67e22; color: white; font-weight: bold;
+                                 border-radius: 6px; padding: 8px 14px; font-size: 12px;
+                                 border: 1px solid #d35400; }
+                    QPushButton:hover { background: #d35400; }
+                """)
+                self.btn_generate.setText("批量生成")
+                self.btn_generate.setToolTip("每行数据生成一个独立文件")
+
+        # 重建表单以应用自定义显示名
+        self._build_form(self.batch.tags, self.batch.loops)
+
+        # 重新填充重建表单后的数据（因为 build_form 会清空表单）
+        context = data.get('context', {})
+        for tag, widget in self._field_widgets.items():
+            if tag in context:
+                val = str(context[tag]) if context[tag] is not None else ''
+                if isinstance(widget, QTextEdit):
+                    widget.setPlainText(val)
+                else:
+                    widget.setText(val)
+
+        self._project_path = path
+        self._update_title()
+        self.status_bar.showMessage(f"已打开项目：{path}")
+
+    def _update_title(self):
+        """更新窗口标题，显示项目文件名"""
+        base = "TemplateFill — 模板文档生成器"
+        if self._project_path:
+            name = os.path.basename(self._project_path)
+            self.setWindowTitle(f"{base}  [{name}]")
+        else:
+            self.setWindowTitle(base)
+
     # ── 文档生成 ────────────────────────────────────────────
 
     def _on_generate(self):
@@ -580,38 +839,23 @@ class TemplateFillWindow(QMainWindow):
             self.batch._on_batch_generate()
             return
 
-        # 收集简单变量
-        context = {}
-        for tag, widget in self._field_widgets.items():
-            if isinstance(widget, QTextEdit):
-                context[tag] = widget.toPlainText()
-            else:
-                context[tag] = widget.text()
+        context, loops_raw = self._collect_context()
 
-        # 收集循环表格数据
-        for loop_var, table in self._loop_tables.items():
-            fields = self._loop_fields.get(loop_var, [])
-            items = []
-            for row in range(table.rowCount()):
-                item_data = {}
-                for col in range(table.columnCount()):
-                    field_name = fields[col] if col < len(fields) else f"col{col}"
-                    cell_item = table.item(row, col)
-                    value = cell_item.text().strip() if cell_item else ''
-                    # 尝试转换数值
+        # 将循环数据的字符串值转为数值（与 _collect_context 纯字符串语义分离）
+        loops = {}
+        for loop_var, items in loops_raw.items():
+            typed_items = []
+            for item_data in items:
+                typed = {}
+                for k, v in item_data.items():
                     try:
-                        if '.' in value:
-                            value = float(value)
-                        else:
-                            value = int(value)
-                    except ValueError:
-                        pass
-                    item_data[field_name] = value
-                # 跳过全空行
-                if any(v != '' and v is not None for v in item_data.values()):
-                    items.append(item_data)
-            if items:
-                context[loop_var] = items
+                        typed[k] = float(v) if '.' in str(v) else int(v)
+                    except (ValueError, TypeError):
+                        typed[k] = v
+                typed_items.append(typed)
+            if typed_items:
+                loops[loop_var] = typed_items
+        context.update(loops)
 
         try:
             if self._template_format == 'xlsx':

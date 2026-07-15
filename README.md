@@ -11,7 +11,7 @@
 </div>
 <div>
     <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-    <img alt="version" src="https://img.shields.io/badge/version-1.1.0-green">
+    <img alt="version" src="https://img.shields.io/badge/version-0.0.3-green">
 </div>
 <br>
 
@@ -36,12 +36,12 @@ pip install -r requirements.txt
 python main.py
 ```
 
-| 依赖 | 版本 | 用途 |
-|------|------|------|
-| [PySide6](https://pypi.org/project/PySide6/) | >= 6.5 | Qt6 GUI 桌面界面 |
-| [docxtpl](https://pypi.org/project/docxtpl/) | >= 0.16 | Word 模板 Jinja2 渲染 |
-| [python-docx](https://pypi.org/project/python-docx/) | >= 0.8 | Word 文档生成 |
-| [openpyxl](https://pypi.org/project/openpyxl/) | >= 3.1 | Excel 模板读写 |
+| 依赖                                                 | 版本    | 用途                  |
+| ---------------------------------------------------- | ------- | --------------------- |
+| [PySide6](https://pypi.org/project/PySide6/)         | >= 6.5  | Qt6 GUI 桌面界面      |
+| [docxtpl](https://pypi.org/project/docxtpl/)         | >= 0.16 | Word 模板 Jinja2 渲染 |
+| [python-docx](https://pypi.org/project/python-docx/) | >= 0.8  | Word 文档生成         |
+| [openpyxl](https://pypi.org/project/openpyxl/)       | >= 3.1  | Excel 模板读写        |
 
 ## 亮点功能
 
@@ -65,24 +65,24 @@ python main.py
 
 ### 模板语法
 
-| 语法 | 示例 | 适用格式 | 说明 |
-|------|------|----------|------|
-| 简单变量 | `{{ title }}` | Word / Excel | 普通文本替换 |
-| 过滤器 | `{{ name \| upper }}` | Word | Jinja2 过滤器 |
-| 循环 | `{% for item in items %}...{% endfor %}` | Word / Excel | 循环区域展开 |
-| 条件 | `{% if condition %}...{% endif %}` | Word | 条件渲染 |
-| 富文本 | `{{r content }}` | Word | 保留换行、加粗等格式 |
+| 语法     | 示例                                     | 适用格式     | 说明                 |
+| -------- | ---------------------------------------- | ------------ | -------------------- |
+| 简单变量 | `{{ title }}`                            | Word / Excel | 普通文本替换         |
+| 过滤器   | `{{ name \| upper }}`                    | Word         | Jinja2 过滤器        |
+| 循环     | `{% for item in items %}...{% endfor %}` | Word / Excel | 循环区域展开         |
+| 条件     | `{% if condition %}...{% endif %}`       | Word         | 条件渲染             |
+| 富文本   | `{{r content }}`                         | Word         | 保留换行、加粗等格式 |
 
 ### 标签显示名
 
 加载模板后，每个字段的标题由以下优先级决定：
 
-| 优先级 | 来源 | 说明 |
-|--------|------|------|
-| 1 | 双击改名 | 运行时修改，内存中，当前会话有效 |
-| 2 | `.labels.json` | 模板同目录的配套文件，关闭后仍生效 |
-| 3 | 内置映射 | `labels.py` 中 130+ 常用字段的中文名 |
-| 4 | 自动生成 | 将 `_` 替换为空格并首字母大写 |
+| 优先级 | 来源           | 说明                                 |
+| ------ | -------------- | ------------------------------------ |
+| 1      | 双击改名       | 运行时修改，内存中，当前会话有效     |
+| 2      | `.labels.json` | 模板同目录的配套文件，关闭后仍生效   |
+| 3      | 内置映射       | `labels.py` 中 130+ 常用字段的中文名 |
+| 4      | 自动生成       | 将 `_` 替换为空格并首字母大写        |
 
 双击任意字段标题即可弹出编辑对话框，可修改显示名和控件类型（单行 / 多行）。修改后自动写回 `.labels.json`。
 
@@ -155,6 +155,6 @@ TemplateFill/
 
 ## 许可证
 
-[MIT License](LICENSE)  © 2025-2026 ChemCal Team
+[MIT License](LICENSE) © 2025-2026 ChemCal Team
 
 联系方式：virmuran@163.com
