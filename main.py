@@ -109,6 +109,9 @@ FIELD_LABEL_STYLE = "font-size: 13px; color: #2c3e50; font-weight: bold; padding
 class TemplateFillWindow(QMainWindow):
     """主窗口"""
 
+    # 默认模板存放目录
+    TEMPLATES_DIR = os.path.join(os.path.expanduser("~"), "TemplateFill", "templates")
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TemplateFill — 模板文档生成器")
@@ -244,10 +247,7 @@ class TemplateFillWindow(QMainWindow):
 
     def _auto_load_sample(self):
         """启动时检查是否有示例模板可用"""
-        sample_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "templates", "sample_report.docx"
-        )
+        sample_path = os.path.join(self.TEMPLATES_DIR, "sample_report.docx")
         if os.path.exists(sample_path):
             self._load_template(sample_path)
 
@@ -263,10 +263,8 @@ class TemplateFillWindow(QMainWindow):
     def _on_create_sample(self):
         """生成示例 Word 模板并自动加载"""
         try:
-            sample_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "templates")
-            os.makedirs(sample_dir, exist_ok=True)
-            sample_path = os.path.join(sample_dir, "sample_report.docx")
+            os.makedirs(self.TEMPLATES_DIR, exist_ok=True)
+            sample_path = os.path.join(self.TEMPLATES_DIR, "sample_report.docx")
             create_sample_template(sample_path)
             QMessageBox.information(self, "成功",
                                     f"示例模板已生成：\n{sample_path}\n\n已自动加载，可以开始填写。")
@@ -277,10 +275,8 @@ class TemplateFillWindow(QMainWindow):
     def _on_create_xlsx_sample(self):
         """生成示例 Excel 模板并自动加载"""
         try:
-            sample_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "templates")
-            os.makedirs(sample_dir, exist_ok=True)
-            sample_path = os.path.join(sample_dir, "sample_quote.xlsx")
+            os.makedirs(self.TEMPLATES_DIR, exist_ok=True)
+            sample_path = os.path.join(self.TEMPLATES_DIR, "sample_quote.xlsx")
             create_xlsx_sample(sample_path)
             QMessageBox.information(self, "成功",
                                     f"Excel 示例模板已生成：\n{sample_path}\n\n"
