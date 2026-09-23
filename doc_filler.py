@@ -4,11 +4,14 @@ TemplateFill — 模板驱动的表单填写工具
 核心逻辑：
   - parse_tags(): 从 DOCX 模板中提取所有 Jinja2 占位符 {{tag}}
   - fill_template(): 将用户输入填充到模板并导出
+  - has_body_marker(): 检查模板是否含 {{__BODY__}} 动态内容标记
+  - fill_template() 支持 sections 参数：在 {{__BODY__}} 位置插入动态章节
 """
 
 import re
 import os
 from docxtpl import DocxTemplate
+from html_to_docx import BODY_MARKER, insert_sections, has_body_marker as _check_body_marker
 
 
 def parse_tags(docx_path):
@@ -66,7 +69,7 @@ def _parse_tags_from_xml(docx_path):
     return list(tags)
 
 
-def fill_template(docx_path, context, output_path=None):
+def fill_template(docx_path, context, output_path=None, sections=None):
     """
     填充模板并保存。
 
@@ -74,12 +77,24 @@ def fill_template(docx_path, context, output_path=None):
       docx_path:   模板 .docx 文件路径
       context:     dict, 键为标签名, 值为填入内容
       output_path: 输出路径, 默认为桌面 + 模板名_时间戳.docx
+      sections:    动态章节数据（list of dict），若模板含 {{__BODY__}} 标记
+                   则在标记位置插入章节内容
     """
     if not os.path.exists(docx_path):
         raise FileNotFoundError(f"模板文件不存在: {docx_path}")
 
     doc = DocxTemplate(docx_path)
+
+    # 如果有动态章节，注入 body marker 用于后续定位
+    if sections is not None:
+        context = dict(context)  # 不修改原 dict
+        context['__BODY__'] = BODY_MARKER
+
     doc.render(context)
+
+    # 后处理：插入动态章节内容
+    if sections is not None:
+        insert_sections(doc, sections)
 
     if output_path is None:
         from datetime import datetime
@@ -136,7 +151,7 @@ def create_sample_template(output_path):
                             run.bold = True
                             run.font.size = Pt(10)
 
-    # 正文
+    # 正文 — 固定段落 + 动态内容区
     doc.add_paragraph()
     doc.add_heading('一、项目概况', level=2)
     doc.add_paragraph('{{overview}}')
@@ -144,14 +159,9 @@ def create_sample_template(output_path):
     doc.add_heading('二、技术方案', level=2)
     doc.add_paragraph('{{technical_plan}}')
 
-    doc.add_heading('三、实施计划', level=2)
-    doc.add_paragraph('{{implementation}}')
-
-    doc.add_heading('四、预算与资源', level=2)
-    doc.add_paragraph('{{budget}}')
-
-    doc.add_heading('五、结论与建议', level=2)
-    doc.add_paragraph('{{conclusion}}')
+    # 动态内容插入点（软件中可增删章节）
+    doc.add_heading('正文内容', level=2)
+    doc.add_paragraph('{{__BODY__}}')
 
     # 页脚
     doc.add_paragraph()
@@ -160,6 +170,11 @@ def create_sample_template(output_path):
 
     doc.save(output_path)
     return output_path
+
+
+def has_body_marker(docx_path):
+    """检查模板是否包含 {{__BODY__}} 动态内容标记"""
+    return _check_body_marker(docx_path)
 
 
 def load_tag_labels(template_path):
