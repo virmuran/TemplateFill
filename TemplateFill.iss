@@ -3,7 +3,7 @@
 ; AppVersion 由 build_release.py 从 version.py 自动同步，勿手改
 
 #define MyAppName "TemplateFill 模板文档生成器"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "TemplateFill"
 
 [Setup]

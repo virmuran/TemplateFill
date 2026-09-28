@@ -1,0 +1,69 @@
+[PASS] 出厂默认关闭行为是「每次询问」
+[PASS] 默认时设置文件尚未创建
+[PASS] 写入偏好成功
+[PASS] 偏好真的落盘（重读文件核对）
+[PASS] 非法取值被拒
+[PASS] 非法取值不污染文件
+[PASS] 偏好可改为直接退出
+[PASS] 设置文件损坏时退回默认值
+[PASS] 损坏时 load_settings 返回空 dict
+[PASS] 未知取值退回默认值
+[PASS] 托盘菜单里有三种关闭行为
+[PASS] 离屏环境本身没有托盘（降级前提成立）
+[PASS] 无托盘时 _setup_tray() 返回 None
+[PASS] 覆写可用性后托盘图标创建成功
+[PASS] 托盘图标挂上了右键菜单
+[PASS] 托盘菜单被长期持有（防 wrapper 回收）
+[PASS] 托盘提示含软件名与版本
+[PASS] 未加载模板时托盘提示为通用文案
+[PASS] 菜单一级项正确
+[PASS] 菜单里有「关闭窗口时」子菜单
+[PASS] 子菜单列出三种行为
+[PASS] 子菜单三项都可勾选（单选组）
+[PASS] 当前偏好对应的项已勾上
+[PASS] 单选互斥成立
+[PASS] 单选组对象在窗口实例上留了引用
+[PASS] 触发「最小化到托盘」项 → 偏好跟着改
+[PASS] 触发菜单项后勾选同步
+[PASS] 切换偏好后旧项取消勾选
+[PASS] 「退出 TemplateFill」已连到 _quit_app
+[PASS] 「打开模板...」已连到打开流程
+[PASS] 从托盘打开模板会先唤回窗口（避免对话框没落点）
+[PASS] 「显示主窗口」已连到唤回
+[PASS] 托盘提示已带上模板名
+[PASS] 收托盘前窗口是可见的（前置条件）
+[PASS] 收托盘后窗口被隐藏
+[PASS] 收托盘后不是真退出
+[PASS] 收托盘后托盘对象仍在（程序继续后台运行）
+[PASS] 收托盘时把填写内容落了盘
+[PASS] 落盘内容就是刚填的值
+[PASS] 首次收托盘弹了一次提示
+[PASS] 单击托盘唤回窗口
+[PASS] 右键托盘不误唤回
+[PASS] 双击托盘唤回窗口
+[PASS] 收托盘前记录了窗口状态（最大化不丢）
+[PASS] 唤回窗口
+[PASS] 唤回用 setWindowState 还原、而不是 showNormal
+[PASS] 询问后选取消 → 窗口留在界面上
+[PASS] 取消不会改动偏好
+[PASS] 询问后选托盘 → 窗口隐藏
+[PASS] 勾了记住 → 偏好写成 tray
+[PASS] 写偏好后菜单勾选同步
+[PASS] 询问后选退出 → 判定为真退出
+[PASS] 未记住时偏好不变
+[PASS] 已记住后点 X 不再询问（询问会改偏好，偏好应保持 quit）
+[PASS] 已记住后点 X 直接真退出
+[PASS] 无托盘环境 _tray 为 None
+[PASS] 无托盘时不隐藏窗口（否则找不回来）
+[PASS] 无托盘时降级为真退出
+[PASS] 全项目没有 self.close() 调用（会走偏好判定，与「退出」意图相反）
+[PASS] 结束进程只有 _quit_app 一处出口
+[PASS] _quit_app 里确实调了 QApplication.quit()
+[PASS] _quit_app 里摘掉了托盘图标
+[PASS] main() 设了 setQuitOnLastWindowClosed(False)
+[PASS] closeEvent 的「直接退出」分支走 _quit_app()
+[PASS] closeEvent 里没有自己另写一份退出逻辑
+[PASS] 点 X 选「直接退出」后进程真的结束（无幽灵进程）
+[PASS] 反向对照：旧写法（只 accept 不 quit）确实会被判为幽灵进程
+
+合计 67 / 67 通过

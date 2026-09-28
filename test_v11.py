@@ -50,6 +50,8 @@ _yes = lambda *a, **k: QMessageBox.StandardButton.Yes
 QMessageBox.question = staticmethod(_yes)
 _orig_info = QMessageBox.information
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok)
+# 关闭窗口会走「每次询问」对话框，离屏下 exec() 永久阻塞且不报错 → 钉死成"取消"
+M.CloseChoiceDialog.exec = lambda self: (setattr(self, 'choice', 'cancel'), 0)[1]
 
 
 def _page_labels(win):

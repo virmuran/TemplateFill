@@ -20,6 +20,10 @@ import main as M  # noqa: E402
 from doc_filler import create_sample_template  # noqa: E402
 from field_widgets import AutoGrowTextEdit  # noqa: E402
 
+# 护栏：关闭窗口会走「每次询问」对话框，离屏下 exec() 永久阻塞且不报错
+# （整套测试会静默卡住，故直接钉死成"取消"）
+M.CloseChoiceDialog.exec = lambda self: (setattr(self, 'choice', 'cancel'), 0)[1]
+
 RESULTS = []
 
 

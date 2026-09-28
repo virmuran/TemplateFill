@@ -23,14 +23,22 @@ from PySide6.QtWidgets import (
     QStatusBar, QSizePolicy, QFrame, QInputDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QStackedWidget, QListWidget, QListWidgetItem, QToolButton, QMenu,
-    QRadioButton, QButtonGroup, QCheckBox,
+    QRadioButton, QButtonGroup, QCheckBox, QDialog, QSystemTrayIcon,
 )
 from PySide6.QtCore import Qt, QEvent
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup
 
+try:
+    from version import VERSION       # 打包后 version.py 随 datas 落在 _internal/ 下
+except ImportError:                   # 极端情况读不到：不显示版本号，其余功能不受影响
+    VERSION = None
 from doc_filler import parse_tags, fill_template, create_sample_template, has_body_marker
 from field_store import load_state, save_state, clear_state, has_state, state_summary
 from field_widgets import AutoGrowTextEdit
+from app_settings import (
+    CLOSE_ACTIONS, DEFAULT_CLOSE_ACTION,
+    get_close_action, set_close_action, get_setting, set_setting,
+)
 
 
 def resource_path(relative_path):
@@ -147,6 +155,61 @@ TEMPLATE_LABEL_STYLE = "#TplName { font-size: 12px; color: #9a9a94; }"
 FIELD_LABEL_STYLE = "font-size: 13px; color: #6b6b66;"
 
 
+class CloseChoiceDialog(QDialog):
+    """点窗口「X」时的三选一 —— 最小化到托盘 / 退出 TemplateFill / 取消
+
+    只在「关闭窗口时 = 每次询问」（出厂默认）下弹出。勾选「记住我的选择」后写入
+    `~/.TemplateFill/settings.json`，之后点 X 直接照办、不再打扰；想改回来走
+    **托盘右键菜单 → 关闭窗口时**（唯一的入口）。
+
+    结果读 `self.choice` 而不是 exec() 返回值 —— 点 X / Esc 关掉对话框时 exec()
+    也返回 0，但语义是「取消」，两者不能混为一谈。
+
+    ⚠ 离屏（offscreen）下 exec() 会永久阻塞且不报错，测试切勿触发本对话框；
+    请直接调用 `TemplateFillWindow._resolve_close_action()` / `_minimize_to_tray()`。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("关闭 TemplateFill")
+        self.setMinimumWidth(420)
+
+        #: "tray" / "quit" / "cancel"（点 X 或 Esc 关掉时保持 cancel）
+        self.choice = "cancel"
+        self.remember = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(12)
+
+        tip = QLabel("要收进右下角托盘继续在后台运行，还是直接退出 TemplateFill？")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        self.remember_box = QCheckBox("记住我的选择（可在托盘右键菜单「关闭窗口时」改回）")
+        layout.addWidget(self.remember_box)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        buttons = (("最小化到托盘", "tray", BUTTON_PRIMARY),
+                   ("直接退出", "quit", BUTTON_SECONDARY),
+                   ("取消", "cancel", BUTTON_GHOST))
+        for text, value, style in buttons:
+            btn = QPushButton(text)
+            btn.setStyleSheet(style)
+            if value == "tray":
+                btn.setDefault(True)       # 回车默认收托盘：误关时不会丢现场
+            btn.clicked.connect(lambda _=False, v=value: self._choose(v))
+            row.addWidget(btn)
+        layout.addLayout(row)
+
+    def _choose(self, value):
+        self.choice = value
+        self.remember = self.remember_box.isChecked()
+        self.accept()
+
+
 class TemplateFillWindow(QMainWindow):
     """主窗口"""
 
@@ -185,7 +248,17 @@ class TemplateFillWindow(QMainWindow):
 
         self.batch = BatchManager(self)   # 批量填充管理器
 
+        # 托盘 / 关闭行为
+        self._tray = None                 # QSystemTrayIcon；系统托盘不可用时为 None
+        self._tray_menu = None            # 托盘右键菜单（必须长期持有，否则被回收即失效）
+        self._close_group = None          # 「关闭窗口时」的单选组
+        self._close_actions = {}          # key → QAction
+        self._pre_tray_state = None       # 收进托盘前的窗口状态（最大化要还原）
+        self._tray_tip_shown = False      # 每次运行只提示一次「程序还在后台」
+        self._really_quit = False         # True = 本次关闭是真退出，不再走托盘逻辑
+
         self._setup_ui()
+        self._setup_tray()
         self._auto_load_sample()
 
     # ── UI 构建 ────────────────────────────────────────────
@@ -197,6 +270,8 @@ class TemplateFillWindow(QMainWindow):
     # 页面骨架：字段页承载全部字段，分组降级为页内小节标题
     HEAD_PAGES = [("fields", "字段")]
     TAIL_PAGES = [("loops", "循环表格"), ("body", "动态正文"), ("export", "生成导出")]
+    # 关闭窗口时的行为 key → 显示名（存 ~/.TemplateFill/settings.json）
+    CLOSE_LABELS = CLOSE_ACTIONS
     # 默认归入「文档信息」小节的常用字段
     PRIORITY_TAGS = ['title', 'project_name', 'department', 'author',
                      'date', 'doc_number', 'company', 'reviewer', 'phone']
@@ -859,6 +934,8 @@ class TemplateFillWindow(QMainWindow):
                     f"已加载{fmt_name}模板并带出上次填写内容（{restored} 个字段）", 6000)
             else:
                 self.status_bar.showMessage(f"已加载{fmt_name}模板：{path}")
+
+            self._update_tray_tooltip()      # 托盘悬停提示带上模板名
 
         except Exception as e:
             QMessageBox.critical(self, "加载失败", str(e))
@@ -1994,14 +2071,215 @@ class TemplateFillWindow(QMainWindow):
         elif action == 'open_dir':
             self._open_path(os.path.dirname(out_path))
 
+    # ── 托盘 / 关闭行为 ─────────────────────────────────────
+
+    @staticmethod
+    def _tray_available():
+        """系统托盘是否可用（抽成方法，便于离屏测试替换）"""
+        return QSystemTrayIcon.isSystemTrayAvailable()
+
+    def _setup_tray(self):
+        """右下角托盘图标 —— 收进托盘后程序继续在后台运行
+
+        关闭行为由 settings.json 的 close_action 决定（ask / tray / quit，出厂 ask）。
+        系统托盘不可用的环境里静默跳过，点 X 仍照原样退出 —— 绝不出现
+        「窗口不见了、程序还在」这种找不回来的状态。
+        """
+        if not self._tray_available():
+            return None
+        try:
+            icon = QIcon(resource_path("TemplateFill.ico"))
+            tray = QSystemTrayIcon(icon, self)
+            tray.setContextMenu(self._build_tray_menu())
+            tray.activated.connect(self._on_tray_activated)
+            self._tray = tray
+            self._update_tray_tooltip()
+            tray.show()
+            return tray
+        except Exception:
+            self._tray = None            # 托盘建不起来就当作不可用，走降级路径
+            return None
+
+    def _build_tray_menu(self):
+        """托盘右键菜单（与「托盘是否可用」解耦，离屏测试可直接取用）
+
+        ⚠ 返回的 QMenu 必须长期持有（self._tray_menu）—— PySide6 里 wrapper
+        一被回收就连带删掉底层 C++ 对象，菜单随即失效。
+        """
+        menu = QMenu(self)
+        self._add_menu_action(menu, "显示主窗口", self._restore_from_tray)
+        self._add_menu_action(menu, "打开模板...", self._tray_open_template)
+        menu.addSeparator()
+        # 「关闭窗口时」—— 记住选择之后想改回来，这里是唯一入口
+        behavior = menu.addMenu("关闭窗口时")
+        self._close_group = QActionGroup(self)
+        self._close_group.setExclusive(True)
+        self._close_actions = {}
+        for key, label in self.CLOSE_LABELS:
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setChecked(key == self._resolve_close_action())
+            act.triggered.connect(lambda _checked=False, k=key: self._set_close_action(k))
+            self._close_group.addAction(act)
+            behavior.addAction(act)
+            self._close_actions[key] = act
+        menu.addSeparator()
+        self._add_menu_action(menu, "退出 TemplateFill", self._quit_app)
+        self._tray_menu = menu
+        return menu
+
+    @staticmethod
+    def _add_menu_action(menu, text, slot):
+        act = QAction(text, menu)
+        act.triggered.connect(slot)
+        menu.addAction(act)
+        return act
+
+    def _update_tray_tooltip(self):
+        """托盘悬停提示：软件名 + 版本 + 当前模板名"""
+        if self._tray is None:
+            return
+        tip = f"TemplateFill v{VERSION}" if VERSION else "TemplateFill"
+        if self._template_path:
+            tip += f" — {os.path.basename(self._template_path)}"
+        else:
+            tip += " — 模板文档生成器"
+        self._tray.setToolTip(tip)
+
+    def _on_tray_activated(self, reason):
+        """单击 / 双击托盘图标 → 唤回主窗口（右键不误唤回）"""
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._restore_from_tray()
+
+    def _minimize_to_tray(self):
+        """把主窗口收进托盘（窗口对象仍存活，数据落盘）
+
+        收进托盘也算一次落盘 —— 此后即使直接从托盘退出或被强杀，填写内容都不丢。
+        """
+        if self._tray is None:            # 没有托盘就别把窗口藏起来，否则找不回来
+            self._quit_app()              # 退回真退出（同关闭窗口时选「直接退出」）
+            return False
+        self._pre_tray_state = self.windowState()
+        self._save_all()
+        self.hide()
+        if not self._tray_tip_shown:
+            self._tray_tip_shown = True
+            self._tray.showMessage(
+                "TemplateFill 仍在后台运行",
+                "双击右下角图标可重新打开窗口；右键图标 → 退出 TemplateFill 可完全关闭。",
+                QSystemTrayIcon.MessageIcon.Information, 5000)
+        self.status_bar.showMessage("已收进右下角托盘，程序仍在后台运行", 4000)
+        return True
+
+    def _restore_from_tray(self):
+        """把主窗口从托盘唤回来（保持收进去之前的大小状态）"""
+        self.show()
+        if self._pre_tray_state is not None:
+            self.setWindowState(self._pre_tray_state)   # 不能用 showNormal()，会丢最大化
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_open_template(self):
+        """托盘菜单「打开模板...」：先把窗口唤回来再弹选择框
+
+        窗口隐藏时弹出的对话框没有可见父窗口，容易挂到屏幕外/被压在下面，
+        表现为「点了没反应」—— 所以这里先恢复窗口。
+        """
+        if self.isHidden():
+            self._restore_from_tray()
+        self._on_open_template()
+
+    def _resolve_close_action(self):
+        """当前生效的关闭行为（文件损坏/取值非法一律退回「每次询问」）"""
+        return get_close_action()
+
+    def _set_close_action(self, action):
+        """写入关闭行为偏好，并同步托盘菜单里的勾选"""
+        if not set_close_action(action):
+            return False
+        act = self._close_actions.get(action)
+        if act is not None and not act.isChecked():
+            act.setChecked(True)
+        self.status_bar.showMessage(
+            f"关闭窗口时：{dict(self.CLOSE_LABELS).get(action, action)}", 4000)
+        return True
+
+    def _ask_close_action(self):
+        """弹三选一；返回 (action, remember)"""
+        dlg = CloseChoiceDialog(self)
+        dlg.exec()
+        return dlg.choice, dlg.remember
+
+    def _save_all(self):
+        """退出/收托盘前的落盘（可重复调用，失败静默）"""
+        try:
+            self._remember()
+        except Exception:
+            pass
+
+    def _shutdown(self):
+        """退出前收尾：摘掉托盘图标 + 落盘（可重复调用）"""
+        if self._tray is not None:
+            self._tray.hide()
+        self._save_all()
+
+    def _quit_app(self):
+        """**结束进程的唯一出口** —— 不再询问、不再收托盘
+
+        三件事缺一不可：① 标记真退出（拦住托盘逻辑）② 收尾落盘并摘掉托盘图标
+        ③ `QApplication.quit()` 结束事件循环。
+
+        ⚠ ③ 不能省：main() 里设了 `setQuitOnLastWindowClosed(False)`（收进托盘时
+        防止被 Qt 当成「最后一个窗口已关闭」而结束进程），副作用是**光关窗口不会
+        结束进程**。只 accept() 关闭事件的话，窗口关了、托盘也摘了，进程却在后台
+        活着 —— 窗口和托盘两个入口都没了，用户再也找不回来。
+        """
+        self._really_quit = True
+        self._shutdown()
+        QApplication.quit()
+
     def closeEvent(self, event):
-        """关闭窗口前保存填写记忆"""
-        self._remember()
-        super().closeEvent(event)
+        """点窗口「X」的关闭流程
+
+        出厂默认「每次询问」（本次界面上三选一，可勾选记住）；记住之后点 X 直接
+        照办、不再打扰，改回来的入口在托盘右键菜单「关闭窗口时」。收进托盘只是
+        hide() —— 窗口对象仍存活，从托盘唤回即可，只有真退出才落盘并结束进程。
+
+        ⚠ 「直接退出」这一支**必须走 `_quit_app()`**，不能只 `event.accept()`：
+        main() 设了 `setQuitOnLastWindowClosed(False)`，关掉窗口不会结束进程，
+        否则窗口和托盘同时消失、进程却在后台活着，用户两边都找不回来。
+        """
+        if self._really_quit:             # 已在退出流程中（_quit_app 的重入）
+            event.accept()
+            return
+
+        action = self._resolve_close_action()
+        if action == "ask":
+            action, remember = self._ask_close_action()
+            if remember and action != "cancel":
+                self._set_close_action(action)
+
+        if action == "tray":
+            event.ignore()
+            self._minimize_to_tray()
+            return
+
+        if action == "quit":
+            event.accept()                # 先按用户意愿关窗
+            self._quit_app()              # 再结束进程（落盘 + 摘托盘 + quit）
+            return
+
+        event.ignore()                    # 取消：留在界面上继续用
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("TemplateFill")
+    app.setApplicationVersion(VERSION or "")
     app.setFont(QFont("Microsoft YaHei", 10))
+    # 主窗口可以被收进托盘（hide()）—— 此时"最后一个窗口关闭"不代表要退出进程，
+    # 否则一收托盘程序就没了。真退出统一走 TemplateFillWindow._quit_app()
+    app.setQuitOnLastWindowClosed(False)
     window = TemplateFillWindow()
     window.show()
     sys.exit(app.exec())

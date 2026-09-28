@@ -55,6 +55,10 @@ QMessageBox.information = staticmethod(
 _orig_exec = QDialog.exec
 _orig_reload = None
 
+# 关闭窗口会走「每次询问」对话框，离屏下 exec() 永久阻塞且不报错 → 钉死成"取消"
+# （注意挂在 CloseChoiceDialog 自己身上，不受下面 QDialog.exec = _orig_exec 影响）
+M.CloseChoiceDialog.exec = lambda self: (setattr(self, 'choice', 'cancel'), 0)[1]
+
 
 def _tag_label(win, tag):
     """字段页上定位某个变量对应的标题标签"""
