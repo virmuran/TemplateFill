@@ -1,24 +1,51 @@
+# ── Python ──
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
 *.egg-info/
 *.egg
-dist/
+
+# ── PyInstaller 构建输出 ──
 build/
+dist/
+installer/
+
+# ── 虚拟环境 ──
 venv/
 .venv/
+.venv-build/
 env/
+
+# ── IDE ──
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# ── 系统 ──
 .DS_Store
 Thumbs.db
 Desktop.ini
-.workbuddy/
+
+# ── 可执行文件 ──
+*.exe
+*.msi
+
+# ── 用户运行时数据 ──
+.TemplateFill/
 *.tplfill
 *.labels.json
-.env
-*.local
-*.secret
+*.log
+
+# ── WorkBuddy 工作目录（调试脚本/截图/测试报告，非源码）──
+.workbuddy/
+
+# ── 发版说明草稿（一次性产物：只用来粘进 GitHub Releases 正文，不属仓库内容；
+#    版本记录的唯一来源是 README.md 的「更新日志」）──
+RELEASE_NOTES_v*.md
+
+# ── 临时文件 ──
+*.tmp
+*.bak
+*.orig
