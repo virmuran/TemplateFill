@@ -42,7 +42,7 @@ class BatchManager:
         if self.mode:
             self._capture_defaults()
         self.sync_buttons()
-        self.window._build_form(self.tags, self.loops)
+        self.window._build_form(self.tags)
         if not self.mode:
             # 切回单人模式：用模板记忆把上次填写内容带回来
             self._restore_single_values()
@@ -56,10 +56,7 @@ class BatchManager:
                 self.window._load_previous_state(self.window._template_path) or {}
             if not state:
                 return
-            self.window._apply_context(state.get('values') or {},
-                                       state.get('loops') or [],
-                                       state.get('sections') or [])
-            self.window._update_summary()
+            self.window._apply_context(state.get('values') or {})
         except Exception:
             pass
 
@@ -98,7 +95,7 @@ class BatchManager:
 
     # ── 表单构建 ────────────────────────────────────────────
 
-    def build_form(self, tags, loops):
+    def build_form(self, tags):
         """批量模式：构建大数据表格，每行 = 一个输出文件"""
         fl = self.window.form_layout
 
@@ -184,14 +181,6 @@ class BatchManager:
 
         self.table = table
         fl.addWidget(table)
-
-        # 循环区域提示（批量模式暂不支持）
-        if loops:
-            loop_warn = QLabel(
-                "该模板含循环区域（{% for %}），批量模式不支持循环数据，生成时将跳过。")
-            loop_warn.setStyleSheet("font-size: 12px; color: #a33a3a;")
-            loop_warn.setWordWrap(True)
-            fl.addWidget(loop_warn)
 
         fl.addStretch()
 
@@ -384,12 +373,12 @@ class BatchManager:
             QMessageBox.warning(self.window, "提示", "所有数据行均为空。")
             return
 
-        # 输出位置：沿用「生成导出」页设置，留空则桌面
+        # 输出位置：沿用「导出设置」，留空则桌面
         out_dir = ''
         prefix = ''
         try:
-            out_dir = self.window.out_dir_edit.text().strip()
-            prefix = self.window.out_name_edit.text().strip()
+            out_dir = (self.window._out_dir or '').strip()
+            prefix = (self.window._out_name or '').strip()
         except AttributeError:
             pass
         if not out_dir or not os.path.isdir(out_dir):

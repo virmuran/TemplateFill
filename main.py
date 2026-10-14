@@ -32,7 +32,7 @@ try:
     from version import VERSION       # 打包后 version.py 随 datas 落在 _internal/ 下
 except ImportError:                   # 极端情况读不到：不显示版本号，其余功能不受影响
     VERSION = None
-from doc_filler import parse_tags, fill_template, create_sample_template, has_body_marker
+from doc_filler import parse_tags, fill_template, create_sample_template
 from field_store import load_state, save_state, clear_state, has_state, state_summary
 from field_widgets import AutoGrowTextEdit
 from app_settings import (
@@ -54,7 +54,6 @@ from xlsx_filler import (
     create_sample_template as create_xlsx_sample,
 )
 from batch_manager import BatchManager
-from section_editor import SectionEditor
 from labels import tag_to_label, load_tag_labels, get_label, get_type, is_long_text_tag
 
 # ── 样式（极简风格）──
@@ -92,19 +91,27 @@ QStatusBar::item { border: none; }
 QToolTip { background: #ffffff; color: #2c2c2a; border: 1px solid #e3e3e0; padding: 4px 6px; }
 """
 
-TOPBAR_STYLE = """
-#TopBar { background: #fbfbfa; border-bottom: 1px solid #e3e3e0; }
-#AppName { font-size: 14px; font-weight: 500; color: #2c2c2a; }
-#TplName { font-size: 12px; color: #9a9a94; }
+SIDEBAR_STYLE = """
+#Sidebar { background: #f7f7f5; border-right: 1px solid #e3e3e0; }
+#Sidebar #AppName { font-size: 15px; font-weight: 500; color: #2c2c2a; }
+#Sidebar #TplName { font-size: 11px; color: #9a9a94; }
+#Sidebar #SideSep { background: #e6e6e3; border: none; }
+"""
+
+# 侧栏右上角的「⋯」更多菜单
+MORE_BUTTON_STYLE = """
+QToolButton { background: transparent; color: #75756f; border: none;
+             border-radius: 4px; padding: 2px 8px; font-size: 15px; }
+QToolButton:hover { background: #efefec; color: #2c2c2a; }
+QToolButton::menu-indicator { image: none; }
 """
 
 NAV_STYLE = """
 QListWidget#Nav {
-    background: #f7f7f5; border: none; border-right: 1px solid #e3e3e0;
-    outline: none; padding: 10px 0;
+    background: transparent; border: none; outline: none; padding: 0;
 }
 QListWidget#Nav::item {
-    height: 38px; padding-left: 15px;
+    height: 36px; padding-left: 12px;
     border-left: 3px solid transparent;
     color: #6b6b66; font-size: 13px;
 }
@@ -151,7 +158,6 @@ QPushButton:hover { background: #f2f2ef; color: #2c2c2a; }
 BUTTON_PROJECT = BUTTON_SECONDARY    # 兼容旧调用名
 BUTTON_SUCCESS = BUTTON_PRIMARY      # 兼容旧调用名
 
-TEMPLATE_LABEL_STYLE = "#TplName { font-size: 12px; color: #9a9a94; }"
 FIELD_LABEL_STYLE = "font-size: 13px; color: #6b6b66;"
 
 
@@ -228,14 +234,13 @@ class TemplateFillWindow(QMainWindow):
         self._project_path = None         # 当前项目文件路径（.tplfill）
         self._last_dir = os.path.expanduser("~\\Desktop")  # 上次打开/保存的目录
         self._field_widgets = {}          # tag_name → (QLineEdit | QTextEdit)
-        self._loop_tables = {}            # loop_var → QTableWidget
-        self._loop_fields = {}            # loop_var → [field_names]
         self._custom_labels = {}          # user-edited labels (in-app, highest priority)
         self._custom_types = {}           # user-edited widget types (in-app)
         self._json_labels = {}            # labels from .labels.json file (parsed entries)
-        self._has_body_marker = False     # 模板是否含 {{__BODY__}} 动态内容标记
-        self._section_editor = None       # SectionEditor 实例（仅有 body marker 时创建）
         self._last_output = None          # 最近一次生成的文档路径
+        self._out_dir = ''                # 导出设置：保存位置（空 = 默认桌面）
+        self._out_name = ''               # 导出设置：文件名称前缀（空 = 模板名）
+        self._after_action = 'save'       # 导出设置：生成后动作 save/open_file/open_dir
         self._field_assign = {}           # tag → 分组名（用户自定义归组）
         self._custom_groups = []          # 自定义分组名（有序）
         self._custom_fields = {}          # tag → {'label','type'}（用户手工新增的字段）
@@ -263,13 +268,13 @@ class TemplateFillWindow(QMainWindow):
 
     # ── UI 构建 ────────────────────────────────────────────
 
-    # 左侧导航：字段页 + 三个固定页
+    # 左侧导航：只保留字段页（分组降级为页内小节标题）
     INFO_GROUP = "文档信息"
     FIELDS_GROUP = "变量字段"
-    NAV_TITLES = ["字段", "循环表格", "动态正文", "生成导出"]
-    # 页面骨架：字段页承载全部字段，分组降级为页内小节标题
+    NAV_TITLES = ["字段"]
+    # 页面骨架：字段页承载全部字段
     HEAD_PAGES = [("fields", "字段")]
-    TAIL_PAGES = [("loops", "循环表格"), ("body", "动态正文"), ("export", "生成导出")]
+    TAIL_PAGES = []
     # 关闭窗口时的行为 key → 显示名（存 ~/.TemplateFill/settings.json）
     CLOSE_LABELS = CLOSE_ACTIONS
     # 默认归入「文档信息」小节的常用字段
@@ -280,56 +285,66 @@ class TemplateFillWindow(QMainWindow):
     FIELD_LABEL_MAX_WIDTH = 168
     FIELD_MAX_WIDTH = 760
     FIELD_MAX_LINES = 8
+    # 左侧栏宽度
+    SIDEBAR_WIDTH = 184
 
     def _setup_ui(self):
         self.setStyleSheet(MAIN_STYLE)
 
         central = QWidget()
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        root = QHBoxLayout(central)          # 左栏（功能+导航） + 右栏（模板内容）
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ── 顶栏：应用名 · 模板名 · 主操作 ──
-        top = QWidget()
-        top.setObjectName("TopBar")
-        top.setStyleSheet(TOPBAR_STYLE)
-        top.setFixedHeight(52)
-        row = QHBoxLayout(top)
-        # 上下留边距：控件不再贴满 52px 高度，避免盖住底部分割线，按钮也不会被拉成通栏高
-        row.setContentsMargins(20, 9, 20, 10)
-        row.setSpacing(10)
+        root.addWidget(self._build_sidebar())
 
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, 1)
+
+        # 按当前分组配置生成页面骨架
+        self._rebuild_pages()
+
+        # 只剩一个页面时，导航与分隔线没有存在意义，直接藏掉
+        self._sync_nav_visibility()
+
+        # ── 状态栏 ──
+        self.status_bar = QStatusBar()
+        self.status_bar.setSizeGripEnabled(False)
+        self.status_bar.showMessage("点击左侧「打开模板」开始 — 支持 .docx 与 .xlsx")
+        self.setStatusBar(self.status_bar)
+
+        # 初始空状态
+        self.nav.setCurrentRow(0)
+        self._render_empty_state()
+
+    def _build_sidebar(self):
+        """左侧栏：应用名 · 当前模板 · 功能按钮 · 页面导航 · 生成
+
+        所有功能性按钮都收在这一栏，右侧整块留给模板要填写的内容。
+        """
+        side = QWidget()
+        side.setObjectName("Sidebar")
+        side.setStyleSheet(SIDEBAR_STYLE)
+        side.setFixedWidth(self.SIDEBAR_WIDTH)
+
+        col = QVBoxLayout(side)
+        col.setContentsMargins(14, 16, 14, 16)
+        col.setSpacing(9)
+
+        # ── 品牌行：应用名 + 更多菜单 ──
+        brand = QHBoxLayout()
+        brand.setSpacing(4)
         app_name = QLabel("TemplateFill")
         app_name.setObjectName("AppName")
-        row.addWidget(app_name)
+        brand.addWidget(app_name)
+        brand.addStretch()
 
-        self.lbl_template = QLabel("未加载模板")
-        self.lbl_template.setObjectName("TplName")
-        row.addWidget(self.lbl_template)
-        row.addStretch()
-
-        self.btn_open = QPushButton("打开模板")
-        self.btn_open.setStyleSheet(BUTTON_SECONDARY)
-        self.btn_open.clicked.connect(self._on_open_template)
-        row.addWidget(self.btn_open)
-
-        self.btn_batch = QPushButton("批量模式")
-        self.btn_batch.setStyleSheet(BUTTON_SECONDARY)
-        self.btn_batch.setToolTip("开启后每行数据生成一个独立文件")
-        self.btn_batch.clicked.connect(self.batch.toggle)
-        row.addWidget(self.btn_batch)
-
-        # 更多菜单：示例模板 / 项目文件
         self.btn_more = QToolButton()
         self.btn_more.setText("⋯")
+        self.btn_more.setToolTip("示例模板 / 项目文件 / 清空内容")
         self.btn_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.btn_more.setStyleSheet("""
-            QToolButton { background: transparent; color: #75756f; border: none;
-                         border-radius: 4px; padding: 4px 10px; font-size: 15px; }
-            QToolButton:hover { background: #f2f2ef; color: #2c2c2a; }
-            QToolButton::menu-indicator { image: none; }
-        """)
+        self.btn_more.setStyleSheet(MORE_BUTTON_STYLE)
         more_menu = QMenu(self)
         act_word = more_menu.addAction("生成 Word 示例模板")
         act_word.triggered.connect(self._on_create_sample)
@@ -341,6 +356,10 @@ class TemplateFillWindow(QMainWindow):
         act_save_prj = more_menu.addAction("保存项目...")
         act_save_prj.triggered.connect(self._save_project)
         more_menu.addSeparator()
+        act_export = more_menu.addAction("导出设置...")
+        act_export.setToolTip("保存位置 / 文件名称 / 生成后的动作")
+        act_export.triggered.connect(self._on_export_settings)
+        more_menu.addSeparator()
         act_clear_vals = more_menu.addAction("清空已填内容")
         act_clear_vals.setToolTip("只清空输入框内容，保留字段分组与显示名设置")
         act_clear_vals.triggered.connect(self._on_clear_values)
@@ -348,47 +367,55 @@ class TemplateFillWindow(QMainWindow):
         act_forget.setToolTip("删除本模板的填写记忆（含分组与显示名设置）")
         act_forget.triggered.connect(self._on_forget_template)
         self.btn_more.setMenu(more_menu)
-        row.addWidget(self.btn_more)
+        brand.addWidget(self.btn_more)
+        col.addLayout(brand)
 
+        # ── 当前模板 ──
+        self.lbl_template = QLabel("未加载模板")
+        self.lbl_template.setObjectName("TplName")
+        self.lbl_template.setWordWrap(True)
+        col.addWidget(self.lbl_template)
+
+        col.addSpacing(2)
+
+        # ── 功能按钮 ──
+        self.btn_open = QPushButton("打开模板")
+        self.btn_open.setStyleSheet(BUTTON_SECONDARY)
+        self.btn_open.clicked.connect(self._on_open_template)
+        col.addWidget(self.btn_open)
+
+        self.btn_batch = QPushButton("批量模式")
+        self.btn_batch.setStyleSheet(BUTTON_SECONDARY)
+        self.btn_batch.setToolTip("开启后每行数据生成一个独立文件")
+        self.btn_batch.clicked.connect(self.batch.toggle)
+        col.addWidget(self.btn_batch)
+
+        col.addStretch(1)    # 上组贴顶，主操作钉底
+
+        col.addSpacing(5)
+        self._side_sep = QFrame()
+        self._side_sep.setObjectName("SideSep")
+        self._side_sep.setFixedHeight(1)
+        col.addWidget(self._side_sep)
+        col.addSpacing(3)
+
+        # ── 页面导航 ──
+        self.nav = QListWidget()
+        self.nav.setObjectName("Nav")
+        self.nav.setStyleSheet(NAV_STYLE)
+        self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.currentRowChanged.connect(self._on_nav_changed)
+        col.addWidget(self.nav, 1)
+
+        # ── 主操作 ──
         self.btn_generate = QPushButton("生成文档")
         self.btn_generate.setStyleSheet(BUTTON_PRIMARY)
         self.btn_generate.setEnabled(False)
         self.btn_generate.clicked.connect(self._on_generate)
-        row.addWidget(self.btn_generate)
+        col.addWidget(self.btn_generate)
 
-        root.addWidget(top)
-
-        # ── 主体：左侧导航 + 右侧分区页 ──
-        body = QHBoxLayout()
-        body.setSpacing(0)
-        body.setContentsMargins(0, 0, 0, 0)
-
-        self.nav = QListWidget()
-        self.nav.setObjectName("Nav")
-        self.nav.setStyleSheet(NAV_STYLE)
-        self.nav.setFixedWidth(178)
-        self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.nav.currentRowChanged.connect(self._on_nav_changed)
-        body.addWidget(self.nav)
-
-        self.stack = QStackedWidget()
-        body.addWidget(self.stack, 1)
-
-        # 按当前分组配置生成页面骨架（无自定义分组时为 5 页）
-        self._rebuild_pages()
-
-        root.addLayout(body, 1)
-
-        # ── 状态栏 ──
-        self.status_bar = QStatusBar()
-        self.status_bar.setSizeGripEnabled(False)
-        self.status_bar.showMessage("点击「打开模板」开始 — 支持 .docx 与 .xlsx")
-        self.setStatusBar(self.status_bar)
-
-        # 初始空状态
-        self.nav.setCurrentRow(0)
-        self._render_empty_state()
+        return side
 
     # ── 分区页辅助 ──────────────────────────────────────────
 
@@ -441,12 +468,20 @@ class TemplateFillWindow(QMainWindow):
         self.form_layout = self._page_layouts[fi]
         self.form_container = self._page_containers[fi]
         self.scroll_area = self.stack.widget(fi)
+        self._sync_nav_visibility()
 
     def _page_index(self, key):
         """页标识或索引 → 索引（越界返回 0）"""
         if isinstance(key, int):
             return key
         return self._page.get(key, 0)
+
+    def _sync_nav_visibility(self):
+        """只有一个页面时藏掉导航与分隔线（右侧整块就是内容本身）"""
+        single = self.nav.count() <= 1
+        self.nav.setVisible(not single)
+        if getattr(self, '_side_sep', None) is not None:
+            self._side_sep.setVisible(not single)
 
     def _goto_page(self, key):
         """切换分区页（导航与堆栈同步）；key 可为页标识或索引"""
@@ -459,8 +494,6 @@ class TemplateFillWindow(QMainWindow):
         """左侧导航切换"""
         if 0 <= index < self.stack.count():
             self.stack.setCurrentIndex(index)
-        if index == self._page.get("export"):
-            self._update_summary()
 
     def _on_section_context_menu(self, name, widget, pos):
         """右键字段页内的小节标题（自定义分组）→ 重命名 / 删除分组"""
@@ -527,7 +560,7 @@ class TemplateFillWindow(QMainWindow):
             self._clear_page(pid)
             self._page_header(pid, title)
             if pid == "fields":
-                self._empty_hint(pid, "尚未加载模板。\n\n点击右上角「打开模板」选择 .docx 或 .xlsx 文件，"
+                self._empty_hint(pid, "尚未加载模板。\n\n点击左侧「打开模板」选择 .docx 或 .xlsx 文件，"
                                       "或在「⋯」菜单里生成示例模板先试用。")
             else:
                 self._empty_hint(pid, "尚未加载模板。")
@@ -540,8 +573,6 @@ class TemplateFillWindow(QMainWindow):
             counts = {}
             for pid, tags in self._page_field_tags.items():
                 counts[pid] = len(tags)
-            counts["loops"] = len(self._loop_tables)
-            counts["body"] = self._count_body_blocks()
         for pid, index in self._page.items():
             if not (0 <= index < self.nav.count()):
                 continue
@@ -549,226 +580,107 @@ class TemplateFillWindow(QMainWindow):
             n = counts.get(pid, 0)
             self.nav.item(index).setText(f"{title}  ·  {n}" if n else title)
 
-    def _update_nav_counts(self, counts):
-        """兼容旧调用：counts 依次对应 字段 / 循环表格 / 动态正文"""
-        order = ["fields", "loops", "body"]
-        self._refresh_nav_counts({pid: counts[i] for i, pid in enumerate(order)
-                                  if i < len(counts)})
+    # ── 导出设置（⋯菜单 → 导出设置...） ────────────────────
 
-    def _on_sections_changed(self):
-        """章节编辑器内容变化 → 刷新状态栏与导航计数"""
-        self.status_bar.showMessage("章节内容已更新", 2000)
-        self._refresh_nav_counts()
+    def _on_export_settings(self):
+        """导出设置对话框：保存位置 / 文件名称 / 生成后的动作"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("导出设置")
+        dlg.setMinimumWidth(460)
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(10)
 
-    # ── 页 3：动态正文 ─────────────────────────────────────
-
-    def _build_body_page(self):
-        """动态正文页（仅 Word 模板含 {{__BODY__}} 时可用）"""
-        self._section_editor = None
-        if self.batch.mode:
-            self._page_header("body", "动态正文", "批量模式不可用")
-            self._empty_hint("body", "批量模式下不编辑动态正文，正文内容按模板原样输出。")
-            return
-        if not self._has_body_marker:
-            self._page_header("body", "动态正文", "模板未启用")
-            self._empty_hint("body", "当前模板没有 {{__BODY__}} 标记。\n\n"
-                                     "把 {{__BODY__}} 写进 Word 模板的正文位置，"
-                                     "就能在这里增删章节、自由编排正文，无需改动模板本身；"
-                                     "封面、页眉页脚仍按模板原样输出。")
-            return
-        self._page_header("body", "动态正文",
-                          "增删章节与子项 · 生成时插入到 {{__BODY__}} 所在位置")
-        self._section_editor = SectionEditor()
-        self._section_editor.setMinimumHeight(560)
-        self._section_editor.content_changed.connect(self._on_sections_changed)
-        self._page_layouts[self._page_index("body")].addWidget(self._section_editor, 1)
-
-    # ── 生成导出页 ─────────────────────────────────────────
-
-    def _build_output_page(self):
-        """输出设置 + 生成后动作 + 内容摘要 + 最近输出"""
-        self._page_header("export", "生成导出", "设置保存位置与生成后的动作")
-        lay = self._page_layouts[self._page_index("export")]
-
-        grid_host = QWidget()
-        grid = QGridLayout(grid_host)
-        grid.setContentsMargins(0, 4, 0, 0)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
         grid.setColumnStretch(1, 1)
 
         lbl_dir = QLabel("保存位置")
-        lbl_dir.setFixedWidth(96)
+        lbl_dir.setFixedWidth(64)
         lbl_dir.setStyleSheet(FIELD_LABEL_STYLE)
         grid.addWidget(lbl_dir, 0, 0)
 
-        self.out_dir_edit = QLineEdit()
-        self.out_dir_edit.setPlaceholderText(f"留空用默认：{self._default_output_dir()}")
-        grid.addWidget(self.out_dir_edit, 0, 1)
+        dir_edit = QLineEdit(self._out_dir)
+        dir_edit.setPlaceholderText(f"留空用默认：{self._default_output_dir()}")
+        grid.addWidget(dir_edit, 0, 1)
 
         btn_browse = QPushButton("选择目录")
         btn_browse.setStyleSheet(BUTTON_SECONDARY)
-        btn_browse.clicked.connect(self._choose_output_dir)
+        btn_browse.clicked.connect(lambda: self._pick_dir_into(dir_edit))
         grid.addWidget(btn_browse, 0, 2)
 
         lbl_name = QLabel("文件名称")
-        lbl_name.setFixedWidth(96)
+        lbl_name.setFixedWidth(64)
         lbl_name.setStyleSheet(FIELD_LABEL_STYLE)
         grid.addWidget(lbl_name, 1, 0)
 
-        self.out_name_edit = QLineEdit()
-        self.out_name_edit.setPlaceholderText("留空则用模板名")
-        self.out_name_edit.textChanged.connect(self._update_filename_preview)
-        grid.addWidget(self.out_name_edit, 1, 1, 1, 2)
+        name_edit = QLineEdit(self._out_name)
+        name_edit.setPlaceholderText("留空则用模板名")
+        grid.addWidget(name_edit, 1, 1, 1, 2)
+        lay.addLayout(grid)
 
-        self.lbl_filename_preview = QLabel()
-        self.lbl_filename_preview.setStyleSheet(PAGE_HINT_STYLE)
-        grid.addWidget(self.lbl_filename_preview, 2, 1, 1, 2)
-        lay.addWidget(grid_host)
+        hint = QLabel(f"输出文件示例：{self._filename_example(name_edit.text().strip())}")
+        hint.setStyleSheet(PAGE_HINT_STYLE)
+        hint.setWordWrap(True)
+        name_edit.textChanged.connect(
+            lambda text: hint.setText(f"输出文件示例：{self._filename_example(text.strip())}"))
+        lay.addWidget(hint)
 
         act_title = QLabel("生成后")
-        act_title.setStyleSheet("font-size: 13px; color: #6b6b66; margin-top: 6px;")
+        act_title.setStyleSheet("font-size: 13px; color: #6b6b66; margin-top: 4px;")
         lay.addWidget(act_title)
 
         act_row = QHBoxLayout()
         act_row.setSpacing(22)
-        self._action_group = QButtonGroup(self)
+        group = QButtonGroup(dlg)
         for i, (text, key) in enumerate([("仅保存", 'save'),
                                          ("打开文件", 'open_file'),
                                          ("打开所在文件夹", 'open_dir')]):
             rb = QRadioButton(text)
             rb.setStyleSheet("QRadioButton { font-size: 13px; color: #4a4a46; }")
             rb.setProperty("action_key", key)
-            self._action_group.addButton(rb, i)
-            act_row.addWidget(rb)
-            if i == 0:
+            group.addButton(rb, i)
+            if key == self._after_action:
                 rb.setChecked(True)
+            act_row.addWidget(rb)
         act_row.addStretch()
         lay.addLayout(act_row)
 
-        sum_title = QLabel("内容摘要")
-        sum_title.setStyleSheet("font-size: 13px; color: #6b6b66; margin-top: 10px;")
-        lay.addWidget(sum_title)
-
-        self.lbl_summary = QLabel("—")
-        self.lbl_summary.setStyleSheet("font-size: 13px; color: #4a4a46;")
-        self.lbl_summary.setWordWrap(True)
-        lay.addWidget(self.lbl_summary)
-
         btn_row = QHBoxLayout()
-        self.btn_gen_page = QPushButton("生成文档")
-        self.btn_gen_page.setStyleSheet(BUTTON_PRIMARY)
-        self.btn_gen_page.setMinimumHeight(34)
-        self.btn_gen_page.clicked.connect(self._on_generate)
-        btn_row.addWidget(self.btn_gen_page)
         btn_row.addStretch()
+        btn_ok = QPushButton("确定")
+        btn_ok.setStyleSheet(BUTTON_PRIMARY)
+        btn_ok.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_ok)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setStyleSheet(BUTTON_SECONDARY)
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_row.addWidget(btn_cancel)
         lay.addLayout(btn_row)
 
-        recent_title = QLabel("最近输出")
-        recent_title.setStyleSheet("font-size: 13px; color: #6b6b66; margin-top: 10px;")
-        lay.addWidget(recent_title)
-
-        recent_box = QWidget()
-        recent_lay = QHBoxLayout(recent_box)
-        recent_lay.setContentsMargins(0, 0, 0, 0)
-        recent_lay.setSpacing(10)
-        self.lbl_recent = QLabel("尚未生成文档")
-        self.lbl_recent.setStyleSheet(PAGE_HINT_STYLE)
-        recent_lay.addWidget(self.lbl_recent, 1)
-
-        self.btn_recent_open = QPushButton("打开文件")
-        self.btn_recent_open.setStyleSheet(BUTTON_SECONDARY)
-        self.btn_recent_open.setEnabled(False)
-        self.btn_recent_open.clicked.connect(lambda: self._open_path(self._last_output))
-        recent_lay.addWidget(self.btn_recent_open)
-
-        self.btn_recent_dir = QPushButton("打开所在文件夹")
-        self.btn_recent_dir.setStyleSheet(BUTTON_SECONDARY)
-        self.btn_recent_dir.setEnabled(False)
-        self.btn_recent_dir.clicked.connect(
-            lambda: self._open_path(os.path.dirname(self._last_output) if self._last_output else ""))
-        recent_lay.addWidget(self.btn_recent_dir)
-        lay.addWidget(recent_box)
-
-        lay.addStretch()
-
-        self._update_filename_preview()
-        self._update_summary()
-        self._update_recent_output()
-
-    def _update_summary(self):
-        """刷新内容摘要"""
-        if not hasattr(self, 'lbl_summary'):
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        self._out_dir = dir_edit.text().strip()
+        self._out_name = name_edit.text().strip()
+        btn = group.checkedButton()
+        self._after_action = btn.property("action_key") if btn else 'save'
+        self.status_bar.showMessage("导出设置已更新", 3000)
 
-        if self.batch.mode and self.batch.table:
-            t = self.batch.table
-            self.lbl_summary.setText(
-                f"批量数据　{t.rowCount()} 行 × {t.columnCount()} 列　·　"
-                f"将生成 {t.rowCount()} 个文件")
-            return
-
-        total = len(self._field_widgets)
-        filled = 0
-        for widget in self._field_widgets.values():
-            try:
-                text = widget.toPlainText() if hasattr(widget, 'toPlainText') else widget.text()
-            except Exception:
-                text = ''
-            if text and text.strip():
-                filled += 1
-
-        loop_rows = 0
-        for table in self._loop_tables.values():
-            for r in range(table.rowCount()):
-                for c in range(table.columnCount()):
-                    item = table.item(r, c)
-                    if item and item.text().strip():
-                        loop_rows += 1
-                        break
-
-        parts = [f"字段　{filled} / {total} 已填"]
-        if self._loop_tables:
-            parts.append(f"循环数据　{loop_rows} 行")
-        if self._has_body_marker:
-            parts.append(f"正文章节　{self._count_body_blocks()} 章")
-        self.lbl_summary.setText("　·　".join(parts))
-
-    def _update_filename_preview(self):
-        """输出文件名预览"""
-        if not hasattr(self, 'lbl_filename_preview'):
-            return
-        if not self._template_path:
-            self.lbl_filename_preview.setText("加载模板后显示输出文件名")
-            return
-        stem = self.out_name_edit.text().strip() or \
-            os.path.splitext(os.path.basename(self._template_path))[0] + "_已填写"
-        ext = os.path.splitext(self._template_path)[1].lower()
-        self.lbl_filename_preview.setText(f"输出文件：{stem}_日期时间{ext}")
-
-    def _update_recent_output(self):
-        """最近输出区状态"""
-        if not hasattr(self, 'lbl_recent'):
-            return
-        if self._last_output and os.path.exists(self._last_output):
-            self.lbl_recent.setText(os.path.basename(self._last_output))
-            self.lbl_recent.setToolTip(self._last_output)
-            self.lbl_recent.setStyleSheet("font-size: 13px; color: #2c2c2a;")
-            self.btn_recent_open.setEnabled(True)
-            self.btn_recent_dir.setEnabled(True)
-        else:
-            self.lbl_recent.setText("尚未生成文档")
-            self.lbl_recent.setToolTip("")
-            self.lbl_recent.setStyleSheet(PAGE_HINT_STYLE)
-            self.btn_recent_open.setEnabled(False)
-            self.btn_recent_dir.setEnabled(False)
-
-    def _choose_output_dir(self):
-        """选择输出目录"""
-        start = self.out_dir_edit.text().strip() or self._default_output_dir()
+    def _pick_dir_into(self, edit):
+        """目录选择对话框 → 写入指定输入框"""
+        start = edit.text().strip() or self._default_output_dir()
         d = QFileDialog.getExistingDirectory(self, "选择保存位置", start)
         if d:
-            self.out_dir_edit.setText(d)
+            edit.setText(d)
+
+    def _filename_example(self, prefix):
+        """按当前模板拼一个输出文件名示例"""
+        if not self._template_path:
+            return "（加载模板后显示）"
+        stem = prefix or os.path.splitext(os.path.basename(self._template_path))[0] + "_已填写"
+        ext = os.path.splitext(self._template_path)[1].lower() or '.docx'
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        return f"{stem}_{ts}{ext}"
 
     @staticmethod
     def _default_output_dir():
@@ -778,18 +690,12 @@ class TemplateFillWindow(QMainWindow):
 
     def _output_action(self):
         """生成后动作：save / open_file / open_dir"""
-        if hasattr(self, '_action_group'):
-            btn = self._action_group.checkedButton()
-            if btn:
-                return btn.property("action_key") or 'save'
-        return 'save'
+        return self._after_action or 'save'
 
     def _resolve_output_path(self):
-        """按输出设置拼出完整路径；返回 None 表示走引擎默认（桌面 + 时间戳）"""
-        if not hasattr(self, 'out_dir_edit'):
-            return None
-        out_dir = self.out_dir_edit.text().strip()
-        prefix = self.out_name_edit.text().strip()
+        """按导出设置拼出完整路径；返回 None 表示走引擎默认（桌面 + 时间戳）"""
+        out_dir = self._out_dir
+        prefix = self._out_name
         if not out_dir and not prefix:
             return None
         base_dir = out_dir or self._default_output_dir()
@@ -873,37 +779,29 @@ class TemplateFillWindow(QMainWindow):
                 self._template_format = 'xlsx'
                 result = parse_xlsx_tags(path)
                 tags = result['simple']
-                loops = result['loops']
                 self._json_labels = load_tag_labels(path)
-                self._has_body_marker = False
             else:
                 self._template_format = 'docx'
                 tags = parse_tags(path)
-                loops = {}
                 self._json_labels = load_tag_labels(path)
-                # 检测模板是否含 {{__BODY__}} 动态内容标记
-                self._has_body_marker = has_body_marker(path)
 
-            if not tags and not loops:
+            if not tags:
                 QMessageBox.warning(self, "提示",
                                     "模板中未检测到 {{变量}} 占位符。\n\n"
                                     "请在模板中使用 {{变量名}} 格式插入占位符。")
                 return
 
-            total_fields = len(tags) + len(loops)
+            total_fields = len(tags)
             fmt_name = "Excel" if self._template_format == 'xlsx' else "Word"
             self._template_path = path
             self._project_path = None
-            self._section_editor = None
             self.batch.tags = tags
-            self.batch.loops = loops
+            self.batch.loops = {}
             # 模板里真实存在的变量（用于「模板无此变量」提示）
             self._parsed_tags = set(tags)
-            for loop_info in (loops or {}).values():
-                self._parsed_tags.update(loop_info.get('fields') or [])
             self.lbl_template.setText(
-                f"·  {os.path.basename(path)}  ·  {fmt_name}  ·  {total_fields} 个字段")
-            self.lbl_template.setStyleSheet("color: #9a9a94; font-size: 12px;")
+                f"{os.path.basename(path)}\n{fmt_name} · {total_fields} 个字段")
+            self.lbl_template.setToolTip(path)
 
             # 读取本模板的填写记忆（分组/显示名需在建设界面前应用）
             state = self._load_previous_state(path) if restore_memory else {}
@@ -920,13 +818,12 @@ class TemplateFillWindow(QMainWindow):
                 self._field_order = []
 
             self._rebuild_pages()
-            self._build_form(tags, loops)
+            self._build_form(tags)
 
             restored = 0
             if state:
                 restored = self._restore_state(state)
                 self._refresh_nav_counts()
-                self._update_summary()
 
             self.btn_generate.setEnabled(True)
             if restored:
@@ -935,6 +832,7 @@ class TemplateFillWindow(QMainWindow):
             else:
                 self.status_bar.showMessage(f"已加载{fmt_name}模板：{path}")
 
+            self._update_title()             # 窗口标题带上当前模板名
             self._update_tray_tooltip()      # 托盘悬停提示带上模板名
 
         except Exception as e:
@@ -942,19 +840,15 @@ class TemplateFillWindow(QMainWindow):
 
     # ── 表单构建 ────────────────────────────────────────────
 
-    def _build_form(self, tags, loops=None):
+    def _build_form(self, tags):
         """构建输入表单。
 
         tags: 模板解析出的简单变量列表
-        loops: 循环区域 dict {loop_var: {fields, item_var, ...}}
 
-        页面：字段（全部字段单列纵向排列，分组降级为小节标题）/ 循环表格 / 动态正文 / 生成导出
+        页面：字段页承载全部字段（单列纵向排列，分组降级为小节标题）。
         """
         self._field_widgets.clear()
-        self._loop_tables.clear()
-        self._loop_fields.clear()
         self.batch.table = None
-        self._section_editor = None
         self._page_field_tags = {}
         self._template_tags = list(tags or [])
         for pid in list(self._page):
@@ -963,27 +857,13 @@ class TemplateFillWindow(QMainWindow):
         # ── 批量模式：字段并入字段页的大表格 ──
         if self.batch.mode and tags:
             self._page_header("fields", "批量表格", f"{len(tags)} 列 · 每行数据生成一个独立文件")
-            self.batch.build_form(tags, loops)
-            if not loops:
-                self._page_header("loops", "循环表格")
-                self._empty_hint("loops", "该模板没有循环区域。")
-            else:
-                self._page_header("loops", "循环表格", "批量模式不支持")
-                self._empty_hint("loops", "批量模式下不支持循环数据，生成时将跳过。")
-            self._build_body_page()
-            self._build_output_page()
+            self.batch.build_form(tags)
             self._goto_page("fields")
-            self._refresh_nav_counts({"fields": len(tags), "loops": len(loops or {}),
-                                      "body": self._count_body_blocks()})
+            self._refresh_nav_counts({"fields": len(tags)})
             return
 
         # ── 字段页（单列 + 小节标题） ──
         self._build_field_page(tags)
-
-        # 循环表格 / 动态正文 / 生成导出
-        self._build_loop_page(loops)
-        self._build_body_page()
-        self._build_output_page()
 
         self._goto_page("fields")
         self._refresh_nav_counts()
@@ -1192,14 +1072,13 @@ class TemplateFillWindow(QMainWindow):
 
     def _reload_ui(self, rebuild_pages=False):
         """重建界面（可选重建页面骨架），并保留已填内容"""
-        context, loops, sections = ({}, {}, [])
+        context = {}
         if self._field_widgets:
-            context, loops, sections = self._collect_context()
+            context = self._collect_context()
         if rebuild_pages:
             self._rebuild_pages()
-        self._build_form(self.batch.tags, self.batch.loops)
-        self._apply_context(context, loops, sections)
-        self._update_summary()
+        self._build_form(self.batch.tags)
+        self._apply_context(context)
 
     # ── 字段网格 ────────────────────────────────────────────
 
@@ -1371,118 +1250,6 @@ class TemplateFillWindow(QMainWindow):
         self._remember()
         self.status_bar.showMessage(f"已从界面移除字段「{label}」", 4000)
 
-    def _count_body_blocks(self):
-        """统计动态正文章节数（无正文标记时为 0）"""
-        if not self._has_body_marker or not self._section_editor:
-            return 0
-        try:
-            return len(self._section_editor.get_sections())
-        except Exception:
-            return 0
-
-    def _build_loop_page(self, loops):
-        """循环表格页"""
-        count = len(loops or {})
-        if not loops:
-            self._page_header("loops", "循环表格", "无循环区域")
-            self._empty_hint("loops", "该模板没有 {% for %} 循环区域。\n\n"
-                                      "循环区域用于模板中重复出现的表格数据（如明细行），"
-                                      "在模板里写成 {% for item in items %} 形式即可被识别。")
-            return
-        self._page_header("loops", "循环表格", f"{count} 个循环区域 · 每个区域可添加多行数据")
-        for loop_var, loop_info in loops.items():
-            self._build_loop_section(loop_var, loop_info['fields'], loop_info)
-        self._page_layouts[self._page_index("loops")].addStretch()
-
-    def _build_loop_section(self, loop_var, fields, loop_info):
-        """为循环区域构建 QTableWidget 输入区"""
-        item_var = loop_info.get('item_var', 'item')
-        display_name = self._resolve_label(loop_var)
-
-        box = QWidget()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(8)
-
-        head = QHBoxLayout()
-        head.setSpacing(10)
-        title = QLabel(display_name)
-        title.setStyleSheet("font-size: 13px; font-weight: 500; color: #2c2c2a;")
-        head.addWidget(title)
-        code = QLabel("{% for " + item_var + " in " + loop_var + " %}")
-        code.setStyleSheet("font-size: 11px; color: #b5b5b0;")
-        head.addWidget(code)
-        head.addStretch()
-
-        btn_add = QPushButton("＋ 添加行")
-        btn_add.setStyleSheet(BUTTON_SECONDARY)
-        btn_add.clicked.connect(lambda checked=False, lv=loop_var, f=fields: self._add_loop_row(lv, f))
-        head.addWidget(btn_add)
-
-        btn_del = QPushButton("− 删除选中行")
-        btn_del.setStyleSheet(BUTTON_SECONDARY)
-        btn_del.clicked.connect(lambda checked=False, lv=loop_var: self._remove_loop_row(lv))
-        head.addWidget(btn_del)
-        layout.addLayout(head)
-
-        table = QTableWidget()
-        table.setColumnCount(len(fields))
-        field_labels = [f.replace('_', ' ').title() for f in fields]
-        table.setHorizontalHeaderLabels(field_labels)
-        # 首列（序号）窄一些，其余列可拖拽调整，最后一列自适应填充
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setMinimumSectionSize(60)
-        for col_idx in range(len(fields)):
-            if fields[col_idx] in ('seq', 'index', 'no', 'id'):
-                table.setColumnWidth(col_idx, 52)
-            else:
-                table.setColumnWidth(col_idx, 120)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(False)
-        table.setStyleSheet("""
-            QTableWidget { border: 1px solid #e3e3e0; border-radius: 3px;
-                          gridline-color: #efefec; font-size: 12.5px; background: #ffffff; }
-            QTableWidget::item { padding: 4px 6px; }
-            QTableWidget::item:selected { background: #eceff5; color: #2c2c2a; }
-            QHeaderView::section { background: #f7f7f5; font-weight: 500; color: #6b6b66;
-                                  padding: 6px; border: none;
-                                  border-right: 1px solid #efefec; border-bottom: 1px solid #e3e3e0; }
-        """)
-        table.setMinimumHeight(160)
-        table.setMaximumHeight(420)
-        table.verticalHeader().setDefaultSectionSize(40)
-        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(table)
-
-        self._loop_tables[loop_var] = table
-        self._loop_fields[loop_var] = fields
-        self._page_layouts[self._page_index("loops")].addWidget(box)
-
-    def _add_loop_row(self, loop_var, fields):
-        """在循环表格中添加一行"""
-        table = self._loop_tables.get(loop_var)
-        if not table:
-            return
-        row = table.rowCount()
-        table.insertRow(row)
-        table.setRowHeight(row, 40)
-        if fields and fields[0] in ('seq', 'index', 'no', 'id'):
-            item = QTableWidgetItem(str(row + 1))
-            table.setItem(row, 0, item)
-        table.scrollToBottom()
-
-    def _remove_loop_row(self, loop_var):
-        """删除循环表格中选中的行"""
-        table = self._loop_tables.get(loop_var)
-        if not table:
-            return
-        rows = set()
-        for item in table.selectedItems():
-            rows.add(item.row())
-        for row in sorted(rows, reverse=True):
-            table.removeRow(row)
-
     def _resolve_label(self, tag):
         """解析显示名：自定义编辑 > JSON 文件 > 代码映射 > 自动生成"""
         if tag in self._custom_labels:
@@ -1610,36 +1377,16 @@ class TemplateFillWindow(QMainWindow):
     # ── 项目保存 / 加载 ─────────────────────────────────────
 
     def _collect_context(self):
-        """收集当前表单所有数据，返回 (context, loops, sections)"""
+        """收集当前表单所有字段值，返回 dict {tag: str}"""
         context = {}
         for tag, widget in self._field_widgets.items():
             if isinstance(widget, QTextEdit):
                 context[tag] = widget.toPlainText()
             else:
                 context[tag] = widget.text()
+        return context
 
-        loops = {}
-        for loop_var, table in self._loop_tables.items():
-            fields = self._loop_fields.get(loop_var, [])
-            items = []
-            for row in range(table.rowCount()):
-                item_data = {}
-                for col in range(table.columnCount()):
-                    field_name = fields[col] if col < len(fields) else f"col{col}"
-                    cell_item = table.item(row, col)
-                    item_data[field_name] = cell_item.text().strip() if cell_item else ''
-                if any(v != '' for v in item_data.values()):
-                    items.append(item_data)
-            loops[loop_var] = items
-
-        # 收集动态章节数据
-        sections = []
-        if self._section_editor:
-            sections = self._section_editor.get_sections()
-
-        return context, loops, sections
-
-    def _apply_context(self, context, loops_data=None, sections=None):
+    def _apply_context(self, context):
         """把填写数据回填到当前表单（用于打开项目 / 重建界面 / 恢复记忆）"""
         for tag, widget in self._field_widgets.items():
             if tag not in (context or {}):
@@ -1651,35 +1398,13 @@ class TemplateFillWindow(QMainWindow):
             else:
                 widget.setText(val)
 
-        for loop_var, items in (loops_data or {}).items():
-            table = self._loop_tables.get(loop_var)
-            fields = self._loop_fields.get(loop_var, [])
-            if not table or not fields:
-                continue
-            table.setRowCount(0)
-            for item_data in items:
-                row = table.rowCount()
-                table.insertRow(row)
-                table.setRowHeight(row, 40)
-                for col, field_name in enumerate(fields):
-                    if col >= table.columnCount():
-                        break
-                    value = item_data.get(field_name, '') if isinstance(item_data, dict) else ''
-                    table.setItem(row, col,
-                                  QTableWidgetItem('' if value is None else str(value)))
-
-        if sections and self._section_editor:
-            self._section_editor.set_sections(sections)
-
     # ── 填写记忆（同名模板自动带出上次内容） ────────────────
 
     def _collect_state(self):
         """汇总当前全部可记忆内容"""
-        context, loops, sections = self._collect_context()
+        context = self._collect_context()
         state = {
             'values': {k: v for k, v in context.items() if str(v or '').strip()},
-            'loops': {k: v for k, v in loops.items() if v},
-            'sections': sections,
             'labels': dict(self._custom_labels),
             'types': dict(self._custom_types),
             'groups': list(self._custom_groups),
@@ -1742,11 +1467,10 @@ class TemplateFillWindow(QMainWindow):
         self._field_order = [t for t in order if isinstance(t, str) and t.strip()]
 
     def _restore_state(self, state):
-        """恢复填写内容（字段值 / 循环 / 章节 / 批量数据）"""
+        """恢复填写内容（字段值 / 批量数据）"""
         if not state:
             return 0
-        self._apply_context(state.get('values') or {}, state.get('loops') or {},
-                            state.get('sections') or [])
+        self._apply_context(state.get('values') or {})
 
         # 批量数据：仅当当前处于批量模式且表格已建立
         rows = state.get('batch') or []
@@ -1762,7 +1486,7 @@ class TemplateFillWindow(QMainWindow):
                         table.setItem(row, self.batch.tags.index(tag),
                                       QTableWidgetItem('' if val is None else str(val)))
 
-        filled, sections, batch_rows = state_summary(state)
+        filled, batch_rows = state_summary(state)
         return filled
 
     def _on_clear_values(self):
@@ -1780,13 +1504,8 @@ class TemplateFillWindow(QMainWindow):
                 widget.setPlainText('')
             else:
                 widget.setText('')
-        for table in self._loop_tables.values():
-            table.setRowCount(0)
-        if self._section_editor:
-            self._section_editor.clear()
         if self.batch.mode and self.batch.table:
             self.batch.table.setRowCount(0)
-        self._update_summary()
         self._refresh_nav_counts()
         self._remember()
         self.status_bar.showMessage("已清空填写内容", 4000)
@@ -1816,8 +1535,7 @@ class TemplateFillWindow(QMainWindow):
         self._json_labels = load_tag_labels(self._template_path)
         # 重建界面：不保留已填内容，呈现为「刚打开模板」的干净状态
         self._rebuild_pages()
-        self._build_form(self.batch.tags, self.batch.loops)
-        self._update_summary()
+        self._build_form(self.batch.tags)
         self._refresh_nav_counts()
         self.status_bar.showMessage("已清除本模板记忆", 4000)
 
@@ -1840,15 +1558,13 @@ class TemplateFillWindow(QMainWindow):
         if not path:
             return
 
-        context, loops, sections = self._collect_context()
+        context = self._collect_context()
         if self.batch.mode and not self._field_widgets:
             # 批量模式下没有独立输入框：沿用记忆里的单人模式内容，
             # 否则项目文件会丢掉单人模式填过的值
             fallback = self._restored_state or \
                 self._load_previous_state(self._template_path) or {}
             context = fallback.get('values') or {}
-            loops = fallback.get('loops') or {}
-            sections = fallback.get('sections') or []
 
         batch_data = None
         if self.batch.mode and self.batch.table:
@@ -1875,8 +1591,6 @@ class TemplateFillWindow(QMainWindow):
             'template_path': template_path.replace('\\', '/'),
             'template_format': self._template_format,
             'context': context,
-            'loops': loops,
-            'sections': sections,
             'custom_labels': self._custom_labels,
             'custom_types': self._custom_types,
             'custom_groups': self._custom_groups,
@@ -1970,18 +1684,15 @@ class TemplateFillWindow(QMainWindow):
 
         # 重建表单以应用自定义显示名与分组，再统一回填数据
         self._rebuild_pages()
-        self._build_form(self.batch.tags, self.batch.loops)
+        self._build_form(self.batch.tags)
         self.batch.sync_buttons()
-        self._apply_context(data.get('context', {}), data.get('loops', {}),
-                            data.get('sections', []))
+        self._apply_context(data.get('context', {}))
 
         # 暂存项目里的单人模式内容：批量模式下没有独立输入框，
         # 切回单人模式时用这份数据回填（优先于模板记忆）
         self._restored_state = {
             'values': {k: v for k, v in (data.get('context') or {}).items()
                        if str(v or '').strip()},
-            'loops': data.get('loops') or {},
-            'sections': data.get('sections') or [],
         }
 
         # 批量数据（表格此时才存在，晚于建表填充才不会被重建冲掉）
@@ -2000,18 +1711,18 @@ class TemplateFillWindow(QMainWindow):
 
         self._project_path = path
         self._update_title()
-        self._update_summary()
         self._refresh_nav_counts()
         self.status_bar.showMessage(f"已打开项目：{path}")
 
     def _update_title(self):
-        """更新窗口标题，显示项目文件名"""
+        """更新窗口标题：项目文件名 + 当前模板名"""
         base = "TemplateFill — 模板文档生成器"
+        parts = []
         if self._project_path:
-            name = os.path.basename(self._project_path)
-            self.setWindowTitle(f"{base}  [{name}]")
-        else:
-            self.setWindowTitle(base)
+            parts.append(os.path.basename(self._project_path))
+        if self._template_path:
+            parts.append(os.path.basename(self._template_path))
+        self.setWindowTitle(f"{base}  [{' · '.join(parts)}]" if parts else base)
 
     # ── 文档生成 ────────────────────────────────────────────
 
@@ -2024,46 +1735,25 @@ class TemplateFillWindow(QMainWindow):
             self.batch._on_batch_generate()
             return
 
-        context, loops_raw, sections = self._collect_context()
-
-        # 将循环数据的字符串值转为数值（与 _collect_context 纯字符串语义分离）
-        loops = {}
-        for loop_var, items in loops_raw.items():
-            typed_items = []
-            for item_data in items:
-                typed = {}
-                for k, v in item_data.items():
-                    try:
-                        typed[k] = float(v) if '.' in str(v) else int(v)
-                    except (ValueError, TypeError):
-                        typed[k] = v
-                typed_items.append(typed)
-            if typed_items:
-                loops[loop_var] = typed_items
-        context.update(loops)
+        context = self._collect_context()
 
         try:
             out_arg = self._resolve_output_path()
             if self._template_format == 'xlsx':
                 out_path = fill_xlsx_template(self._template_path, context, out_arg)
             else:
-                # 若模板含 {{__BODY__}} 且有章节数据，传递给 fill_template
-                sections_arg = sections if self._has_body_marker else None
                 out_path = fill_template(self._template_path, context,
-                                         output_path=out_arg, sections=sections_arg)
+                                         output_path=out_arg)
 
             self._show_result(out_path)
         except Exception as e:
             QMessageBox.critical(self, "生成失败", str(e))
 
     def _show_result(self, out_path):
-        """生成结果反馈：状态栏 + 最近输出区，并按设置自动打开"""
+        """生成结果反馈：状态栏提示 + 按导出设置自动打开"""
         self._last_output = out_path
         self._remember()          # 生成成功 → 记住本次填写内容
         self.status_bar.showMessage(f"文档已生成：{out_path}")
-        self._update_recent_output()
-        self._update_summary()
-        self._goto_page("export")
 
         action = self._output_action()
         if action == 'open_file':

@@ -47,6 +47,10 @@ Desktop.ini
 #    发布时整段复制为 GitHub Releases 正文。此规则仅作历史文件兜底）──
 RELEASE_NOTES_v*.md
 
+# ── 测试运行产物（test_*.py 每跑一次都会覆盖的日志，非源码）──
+_*_test_result.txt
+_ui_preview*.png
+
 # ── 临时文件 ──
 *.tmp
 *.bak

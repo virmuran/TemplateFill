@@ -77,8 +77,7 @@ def save_state(template_path, state):
             # 有不可序列化对象（极少见）：退化成字符串
             text = json.dumps(payload, ensure_ascii=False, indent=1, default=str)
         if len(text.encode('utf-8')) > MAX_STATE_BYTES:
-            # 体积超限：丢掉最占地方的部分（章节/批量），保住基本字段值
-            payload.pop('sections', None)
+            # 体积超限：丢掉最占地方的批量数据，保住基本字段值
             payload.pop('batch', None)
             text = json.dumps(payload, ensure_ascii=False, indent=1, default=str)
 
@@ -112,11 +111,10 @@ def has_state(template_path):
 
 
 def state_summary(state):
-    """状态概要：(已填字段数, 章节数, 批量行数)，用于状态栏提示"""
+    """状态概要：(已填字段数, 批量行数)，用于状态栏提示"""
     if not isinstance(state, dict):
-        return 0, 0, 0
+        return 0, 0
     values = state.get('values') or {}
     filled = sum(1 for v in values.values() if str(v or '').strip())
-    sections = state.get('sections') or []
     batch = state.get('batch') or []
-    return filled, len(sections), len(batch)
+    return filled, len(batch)

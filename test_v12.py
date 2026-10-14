@@ -147,7 +147,7 @@ FS.clear_state(tpl)
 w._load_template(tpl)
 n0 = len(w._field_widgets)
 check('字段已构建', n0 > 0, f'{n0} 个')
-check('四个导航页', w.nav.count() == 4, f'{w.nav.count()}')
+check('单页导航', w.nav.count() == 1, f'{w.nav.count()}')
 
 vis = w._visible_tags()
 rows = [w._field_widgets[t].parent() for t in vis]
