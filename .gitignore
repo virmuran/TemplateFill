@@ -9,6 +9,8 @@ __pycache__/
 build/
 dist/
 installer/
+build_diag/
+dist_diag/
 
 # ── 虚拟环境 ──
 venv/
@@ -41,8 +43,8 @@ Desktop.ini
 # ── WorkBuddy 工作目录（调试脚本/截图/测试报告，非源码）──
 .workbuddy/
 
-# ── 发版说明草稿（一次性产物：只用来粘进 GitHub Releases 正文，不属仓库内容；
-#    版本记录的唯一来源是 README.md 的「更新日志」）──
+# ── 发版说明草稿（已取消：更新说明只写在 CHANGELOG.md 的当前版本段，
+#    发布时整段复制为 GitHub Releases 正文。此规则仅作历史文件兜底）──
 RELEASE_NOTES_v*.md
 
 # ── 临时文件 ──

@@ -117,6 +117,14 @@ def main():
     print("  · 安装包：双击下一步到底，自动建开始菜单 + 桌面快捷方式")
     print("  · 便携包：解压即用，零联网")
 
+    print("\n发版说明（一份内容，一处撰写）:")
+    cl = os.path.join(ROOT, "CHANGELOG.md")
+    ready = os.path.exists(cl) and f"### v{ver} " in open(cl, encoding="utf-8").read()
+    print(f"  · 把 CHANGELOG.md 里 v{ver} 那一段整段复制为 Release 正文"
+          f"（{'已就绪' if ready else '★ 尚未撰写'}）")
+    print("  · 格式见 RELEASE_NOTES_TEMPLATE.md；发版前跑一次校验：")
+    print("      python tools/check_release_notes.py")
+
 
 if __name__ == "__main__":
     main()

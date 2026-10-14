@@ -11,7 +11,7 @@
 </div>
 <div>
     <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-    <img alt="version" src="https://img.shields.io/badge/version-0.0.3-green">
+    <img alt="version" src="https://img.shields.io/badge/version-1.3.0-green">
 </div>
 <br>
 
@@ -42,6 +42,8 @@ python main.py
 | [docxtpl](https://pypi.org/project/docxtpl/)         | >= 0.16 | Word 模板 Jinja2 渲染 |
 | [python-docx](https://pypi.org/project/python-docx/) | >= 0.8  | Word 文档生成         |
 | [openpyxl](https://pypi.org/project/openpyxl/)       | >= 3.1  | Excel 模板读写        |
+
+仓库只含源码、不含示例模板，点击软件里的 **「生成 Word 示例 / Excel 示例」** 会在 `~/TemplateFill/templates` 下按需生成。
 
 ## 亮点功能
 
@@ -102,39 +104,9 @@ python main.py
 - 数据行数量决定展开行数，同时修正上下游公式
 - 保留原始单元格样式、格式、边框
 
-## 项目结构
-
-```
-TemplateFill/
-├── main.py              # GUI 主程序（PySide6）
-├── doc_filler.py        # Word 模板引擎
-├── xlsx_filler.py       # Excel 模板引擎
-├── batch_manager.py     # 批量模式逻辑
-├── labels.py            # 标签显示名映射与配置读写
-├── requirements.txt     # Python 依赖
-├── README.md
-└── templates/           # 模板目录
-    ├── sample_report.docx          # Word 示例模板
-    ├── sample_quote.xlsx           # Excel 示例模板
-    └── sample_report.labels.json   # 标签映射示例
-```
-
 ## 更新日志
 
-### v1.1.0
-
-- 新增 Excel（`.xlsx`）模板支持，含循环区域展开与公式翻译
-- 新增批量填充模式，支持 CSV / Excel 导入及剪贴板粘贴
-- 控件类型可由用户配置（双击字段标题弹窗中选择单行 / 多行），配置持久化至 `.labels.json`
-- 内置中文标签映射扩展至 130+ 字段
-- 架构拆分为 5 个模块（`main` / `doc_filler` / `xlsx_filler` / `batch_manager` / `labels`）
-
-### v1.0.0
-
-- Word（`.docx`）模板解析与 Jinja2 渲染
-- 动态表单生成，短文本 / 长文本自适应
-- 中文字段名映射
-- 内置示例模板
+完整更新日志见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 加入我们
 
